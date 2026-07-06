@@ -20,13 +20,17 @@ import AdminProjects from './pages/admin/Projects';
 import Candidates from "./pages/admin/Recruitment/Candidates";
 import InterviewPipeline from "./pages/admin/Recruitment/InterviewPipeline";
 import SelectedCandidates from "./pages/admin/Recruitment/SelectedCandidates";
-import AdminTimeSheet from "./pages/admin/TimeSheet"
+import AdminTimeSheet from "./pages/admin/TimeSheet";
+import AdminRequests from "./pages/admin/Reuests";
+import AdminResignations from "./pages/admin/Resignations";
+import EmployeeAnalytics from "./pages/admin/EmployeeAnalytics";
 
 // employee
 import EmployeeDashboard from "./pages/employee/Dashboard";
 import EmployeeDetails from "./pages/employee/Details";
 import EmployeeResign from './pages/employee/Resign';
 import TimeSheetMaster from "./pages/employee/TimeSheet";
+import EmployeeRequests from "./pages/employee/Request";
 
 // manager
 import ManagerTimesheetReview from "./pages/manager/TimeSheets";
@@ -73,6 +77,9 @@ function App() {
           <Route path="/admin/Recruitment/interviews" element={<InterviewPipeline />} />
           <Route path="/admin/Recruitment/selected" element={<SelectedCandidates />} />
           <Route path="/admin/timesheet" element={<AdminTimeSheet />} />
+          <Route path="/admin/requests" element={<AdminRequests />} />
+          <Route path="/admin/resignations" element={<AdminResignations />} />
+          <Route path="/admin/employees/analytics" element={<EmployeeAnalytics />} />
         </Route>
 
         {/* ==========================================================================
@@ -93,6 +100,7 @@ function App() {
           <Route path="announcements/:id" element={<Announcements />} />
           <Route path="resignation" element={<EmployeeResign />} />
           <Route path="timesheet" element={<TimeSheetMaster/>}/> 
+          <Route path="requests" element={<EmployeeRequests />} />
         </Route>
 
         {/* ==========================================================================

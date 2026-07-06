@@ -10,7 +10,8 @@ import {
   FiClock,
   FiMessageCircle,
   FiChevronLeft,
-  FiChevronRight
+  FiChevronRight,
+  FiFileText // Added for visual description identity markup
 } from "react-icons/fi";
 
 export default function Announcements() {
@@ -25,7 +26,6 @@ export default function Announcements() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
 
-  // Get user role
   const userRole = localStorage.getItem("role") || "employee";
 
   useEffect(() => {
@@ -39,23 +39,21 @@ export default function Announcements() {
       const query = search.toLowerCase();
       setFiltered(
         announcements.filter(a => 
-          a.Notice?.toLowerCase().includes(query)
+          a.Notice?.toLowerCase().includes(query) || 
+          a.Description?.toLowerCase().includes(query) // FIXED: Included description inside input search matrices
         )
       );
     }
     setCurrentPage(1);
   }, [search, announcements]);
 
-  // Check if we're in detail view from URL params or location state
   useEffect(() => {
-    // First check if we have state from navigation
     if (location.state?.announcement) {
       setSelectedAnnouncement(location.state.announcement);
       setIsDetailView(true);
       return;
     }
 
-    // Then check URL params
     const path = window.location.pathname;
     const idMatch = path.match(/\/(\d+)$/);
     if (idMatch && announcements.length > 0) {
@@ -118,7 +116,6 @@ export default function Announcements() {
       basePath = "/manager";
     }
     
-    // Navigate with state so the component knows to show detail view
     navigate(`${basePath}/${viewPath}/${announcement.id}`, { 
       state: { announcement } 
     });
@@ -181,10 +178,22 @@ export default function Announcements() {
               )}
             </div>
 
+            {/* Title / Header Context */}
             <h1 style={styles.detailTitle}>{selectedAnnouncement.Notice}</h1>
             
-            <div style={styles.detailBody}>
-              <p>{selectedAnnouncement.Notice}</p>
+            {/* FIXED: Distinct Block segment generated to isolate and output the detailed structural Description */}
+            <div style={styles.detailBodyContainer}>
+              <h3 style={styles.sectionSubheading}>
+                <FiFileText style={{ verticalAlign: 'middle', marginRight: '6px' }} /> Description Details
+              </h3>
+              <div style={styles.detailBody}>
+                {selectedAnnouncement.Description ? (
+                  // whiteSpace pre-wrap enables newline structural breaks parsing automatically from input forms
+                  <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{selectedAnnouncement.Description}</p>
+                ) : (
+                  <p style={{ color: C.muted, fontStyle: 'italic' }}>No additional description details provided for this event.</p>
+                )}
+              </div>
             </div>
 
             {selectedAnnouncement.EndDate && (
@@ -213,12 +222,11 @@ export default function Announcements() {
         </div>
       </div>
 
-      {/* Search */}
       <div style={styles.searchBar}>
         <FiSearch style={styles.searchIcon} />
         <input
           type="text"
-          placeholder="Search announcements..."
+          placeholder="Search notices or descriptions..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={styles.searchInput}
@@ -228,7 +236,6 @@ export default function Announcements() {
         )}
       </div>
 
-      {/* Loading */}
       {loading ? (
         <div style={styles.loading}>Loading announcements...</div>
       ) : filtered.length === 0 ? (
@@ -253,12 +260,21 @@ export default function Announcements() {
                       </div>
                     )}
                   </div>
+                  
+                  {/* Notice Title Header */}
                   <h3 style={styles.cardTitle}>{announcement.Notice}</h3>
+                  
+                  {/* FIXED: Added clean summary description view text parser with substring bounding box */}
                   <p style={styles.cardDesc}>
-                    {announcement.Notice?.length > 150 
-                      ? `${announcement.Notice.substring(0, 150)}...` 
-                      : announcement.Notice}
+                    {announcement.Description ? (
+                      announcement.Description.length > 160 
+                        ? `${announcement.Description.substring(0, 160)}...` 
+                        : announcement.Description
+                    ) : (
+                      <span style={{ color: C.muted, fontStyle: 'italic', fontSize: '13px' }}>No additional description text details provided.</span>
+                    )}
                   </p>
+                  
                   <button style={styles.viewBtn} onClick={() => handleView(announcement)}>
                     <FiEye /> Read More
                   </button>
@@ -307,262 +323,49 @@ export default function Announcements() {
 
 // ==================== STYLES ====================
 const styles = {
-  container: {
-    maxWidth: "1000px",
-    margin: "0 auto",
-    padding: "32px 24px",
-    fontFamily: "'Inter', system-ui, sans-serif",
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "28px",
-    flexWrap: "wrap",
-    gap: "12px",
-  },
-  title: {
-    fontSize: "28px",
-    fontWeight: "700",
-    color: C.text,
-    margin: "0 0 4px 0",
-  },
-  subtitle: {
-    fontSize: "14px",
-    color: C.muted,
-    margin: 0,
-  },
-  headerBadge: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "8px 16px",
-    background: C.inputBg,
-    border: `1px solid ${C.borderLight}`,
-    borderRadius: "999px",
-    fontSize: "13px",
-    color: C.muted,
-  },
-  searchBar: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    padding: "10px 16px",
-    background: C.card,
-    border: `1px solid ${C.borderLight}`,
-    borderRadius: RADIUS.input,
-    marginBottom: "24px",
-  },
-  searchIcon: {
-    color: C.muted,
-    fontSize: "18px",
-  },
-  searchInput: {
-    flex: 1,
-    border: "none",
-    outline: "none",
-    fontSize: "14px",
-    background: "transparent",
-    color: C.text,
-    fontFamily: "inherit",
-  },
-  clearBtn: {
-    background: "none",
-    border: "none",
-    color: C.muted,
-    cursor: "pointer",
-    fontSize: "14px",
-    padding: "4px 8px",
-  },
-  loading: {
-    textAlign: "center",
-    padding: "60px 20px",
-    color: C.muted,
-    fontSize: "15px",
-  },
-  empty: {
-    textAlign: "center",
-    padding: "60px 20px",
-  },
-  emptyIcon: {
-    fontSize: "48px",
-    marginBottom: "16px",
-  },
-  list: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-  },
-  card: {
-    background: C.card,
-    border: `1px solid ${C.borderLight}`,
-    borderRadius: RADIUS.card,
-    overflow: "hidden",
-  },
-  cardContent: {
-    padding: "20px 24px",
-  },
-  cardHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "10px",
-    flexWrap: "wrap",
-    gap: "8px",
-  },
-  cardDate: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    fontSize: "13px",
-    color: C.muted,
-  },
-  cardExpiry: {
-    fontSize: "12px",
-    color: C.muted,
-    background: C.inputBg,
-    padding: "2px 10px",
-    borderRadius: "999px",
-  },
-  cardTitle: {
-    fontSize: "18px",
-    fontWeight: "600",
-    color: C.text,
-    margin: "0 0 8px 0",
-    lineHeight: "1.3",
-  },
-  cardDesc: {
-    fontSize: "14px",
-    color: C.muted,
-    margin: "0 0 14px 0",
-    lineHeight: "1.6",
-  },
-  viewBtn: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    padding: "6px 16px",
-    background: C.inputBg,
-    border: `1px solid ${C.borderLight}`,
-    borderRadius: "6px",
-    color: C.text,
-    fontSize: "13px",
-    fontWeight: "500",
-    cursor: "pointer",
-    transition: "all 0.2s ease",
-  },
-  pagination: {
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: "12px",
-    marginTop: "28px",
-    paddingTop: "20px",
-    borderTop: `1px solid ${C.borderLight}`,
-  },
-  pageBtn: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    padding: "8px 16px",
-    background: C.inputBg,
-    border: `1px solid ${C.borderLight}`,
-    borderRadius: "6px",
-    color: C.text,
-    fontSize: "13px",
-    fontWeight: "500",
-    cursor: "pointer",
-  },
-  pageBtnDisabled: {
-    opacity: 0.5,
-    cursor: "not-allowed",
-  },
-  pageNumbers: {
-    display: "flex",
-    gap: "4px",
-  },
-  pageNumber: {
-    width: "36px",
-    height: "36px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "transparent",
-    border: "none",
-    borderRadius: "6px",
-    color: C.text,
-    fontSize: "14px",
-    cursor: "pointer",
-  },
-  pageNumberActive: {
-    background: C.primary,
-    color: "#fff",
-  },
-  detailContainer: {
-    maxWidth: "900px",
-    margin: "0 auto",
-  },
-  backBtn: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "8px 16px",
-    background: "transparent",
-    border: `1px solid ${C.borderLight}`,
-    borderRadius: "6px",
-    color: C.text,
-    cursor: "pointer",
-    fontSize: "14px",
-    fontWeight: "500",
-    marginBottom: "20px",
-  },
-  detailCard: {
-    background: C.card,
-    borderRadius: RADIUS.card,
-    overflow: "hidden",
-    boxShadow: "0 4px 20px rgba(0,0,0,0.06)",
-    border: `1px solid ${C.borderLight}`,
-  },
-  detailBanner: {
-    width: "100%",
-    height: "280px",
-    objectFit: "cover",
-  },
-  detailContent: {
-    padding: "28px 32px",
-  },
-  detailMeta: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "16px",
-    marginBottom: "16px",
-  },
-  detailMetaItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    fontSize: "13px",
-    color: C.muted,
-  },
-  detailTitle: {
-    fontSize: "26px",
-    fontWeight: "700",
-    color: C.text,
-    margin: "0 0 16px 0",
-    lineHeight: "1.3",
-  },
-  detailBody: {
-    fontSize: "16px",
-    lineHeight: "1.8",
-    color: C.text,
-    marginBottom: "20px",
-  },
-  detailFooter: {
-    paddingTop: "16px",
-    borderTop: `1px solid ${C.borderLight}`,
-  },
-  detailExpiry: {
-    fontSize: "13px",
-    color: C.muted,
-  },
+  container: { maxWidth: "1000px", margin: "0 auto", padding: "32px 24px", fontFamily: "'Inter', system-ui, sans-serif" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "28px", flexWrap: "wrap", gap: "12px" },
+  title: { fontSize: "28px", fontWeight: "700", color: C.text, margin: "0 0 4px 0" },
+  subtitle: { fontSize: "14px", color: C.muted, margin: 0 },
+  headerBadge: { display: "flex", alignItems: "center", gap: "8px", padding: "8px 16px", background: C.inputBg, border: `1px solid ${C.borderLight}`, borderRadius: "999px", fontSize: "13px", color: C.muted },
+  searchBar: { display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px", background: C.card, border: `1px solid ${C.borderLight}`, borderRadius: RADIUS.input, marginBottom: "24px" },
+  searchIcon: { color: C.muted, fontSize: "18px" },
+  searchInput: { flex: 1, border: "none", outline: "none", fontSize: "14px", background: "transparent", color: C.text, fontFamily: "inherit" },
+  clearBtn: { background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: "14px", padding: "4px 8px" },
+  loading: { textAlign: "center", padding: "60px 20px", color: C.muted, fontSize: "15px" },
+  empty: { textAlign: "center", padding: "60px 20px" },
+  emptyIcon: { fontSize: "48px", marginBottom: "16px" },
+  list: { display: "flex", flexDirection: "column", gap: "16px" },
+  card: { background: C.card, border: `1px solid ${C.borderLight}`, borderRadius: RADIUS.card, overflow: "hidden" },
+  cardContent: { padding: "20px 24px" },
+  cardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" },
+  cardDate: { display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: C.muted },
+  cardExpiry: { fontSize: "12px", color: C.muted, background: C.inputBg, padding: "2px 10px", borderRadius: "999px" },
+  cardTitle: { fontSize: "18px", fontWeight: "600", color: C.text, margin: "0 0 8px 0", lineHeight: "1.3" },
+  cardDesc: { fontSize: "14px", color: C.muted, margin: "0 0 14px 0", lineHeight: "1.6" },
+  viewBtn: { display: "inline-flex", alignItems: "center", gap: "6px", padding: "6px 16px", background: C.inputBg, border: `1px solid ${C.borderLight}`, borderRadius: "6px", color: C.text, fontSize: "13px", fontWeight: "500", cursor: "pointer", transition: "all 0.2s ease" },
+  pagination: { display: "flex", justifyCoonent: "center", alignItems: "center", gap: "12px", marginTop: "28px", paddingTop: "20px", borderTop: `1px solid ${C.borderLight}` },
+  pageBtn: { display: "flex", alignItems: "center", gap: "6px", padding: "8px 16px", background: C.inputBg, border: `1px solid ${C.borderLight}`, borderRadius: "6px", color: C.text, fontSize: "13px", fontWeight: "500", cursor: "pointer" },
+  pageBtnDisabled: { opacity: 0.5, cursor: "not-allowed" },
+  pageNumbers: { display: "flex", gap: "4px" },
+  pageNumber: { width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", borderRadius: "6px", color: C.text, fontSize: "14px", cursor: "pointer" },
+  pageNumberActive: { background: C.primary, color: "#fff" },
+  
+  // Detail View Presentation Layout Configurations
+  detailContainer: { maxWidth: "900px", margin: "0 auto", padding: "20px 0" },
+  backBtn: { display: "inline-flex", alignItems: "center", gap: "8px", padding: "8px 16px", background: "transparent", border: `1px solid ${C.borderLight}`, borderRadius: "6px", color: C.text, cursor: "pointer", fontSize: "14px", fontWeight: "500", marginBottom: "20px" },
+  detailCard: { background: C.card, borderRadius: RADIUS.card, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.06)", border: `1px solid ${C.borderLight}` },
+  detailBanner: { width: "100%", height: "280px", objectFit: "cover" },
+  detailContent: { padding: "28px 32px" },
+  detailMeta: { display: "flex", flexWrap: "wrap", gap: "16px", marginBottom: "20px" },
+  detailMetaItem: { display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: C.muted },
+  detailTitle: { fontSize: "26px", fontWeight: "700", color: C.text, margin: "0 0 24px 0", lineHeight: "1.3" },
+  
+  // FIXED: Added contextual layout styles for description container layers
+  detailBodyContainer: { backgroundColor: C.inputBg || '#f8fafc', padding: '20px', borderRadius: '12px', marginBottom: '24px', border: `1px solid ${C.borderLight}` },
+  sectionSubheading: { margin: '0 0 10px 0', fontSize: '15px', fontWeight: '600', color: C.text },
+  detailBody: { fontSize: "15px", lineHeight: "1.7", color: C.text },
+  
+  detailFooter: { paddingTop: "16px", borderTop: `1px solid ${C.borderLight}` },
+  detailExpiry: { fontSize: "13px", color: C.muted }
 };

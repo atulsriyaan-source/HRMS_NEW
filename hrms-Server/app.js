@@ -9,6 +9,8 @@ const employeeRoutes = require('./routes/employeeRoutes');
 const candidateRoutes = require("./routes/candidateRoutes");
 const managerRoutes = require('./routes/managerRoutes');
 const leaveRoutes = require("./routes/leaveRoutes");
+const hrRoutes = require('./routes/hrRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 
 const PORT = process.env.PORT || 5000;
 
@@ -28,6 +30,8 @@ app.use('/api/employee', employeeRoutes)
 app.use("/api/candidates", candidateRoutes);
 app.use('/api/manager', managerRoutes);
 app.use("/api/leaves", leaveRoutes); 
+app.use('/api/hr', hrRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

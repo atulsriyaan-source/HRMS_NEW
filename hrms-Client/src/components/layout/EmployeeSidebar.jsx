@@ -16,7 +16,7 @@ const navItems = [
     icon: <FiUser />,
   },
   {
-    label: "Leave Management",
+    label: "Manage Leaves",
     path: "/employee/leaves",
     icon: <FiCalendar />,
   },
@@ -33,6 +33,11 @@ const navItems = [
   {
     label: "Announcements",
     path: "/employee/announcements",
+    icon: <FiStar />,
+  },
+   {
+    label: "Requests",
+    path: "/employee/requests",
     icon: <FiStar />,
   },
 ];

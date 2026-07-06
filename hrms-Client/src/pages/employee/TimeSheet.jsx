@@ -49,6 +49,9 @@ const TimeSheetMaster = () => {
   };
   const [taskEntries, setTaskEntries] = useState([]);
 
+  // FIXED: Lock provision constraints setup if weekOffset drops below 0 (Backdated Week Lock)
+  const isBackdatedWeekLocked = weekOffset < 0;
+
   const fetchEmployeeContextAndLogs = async () => {
     setIsLoading(true);
     try {
@@ -150,10 +153,12 @@ const TimeSheetMaster = () => {
   };
 
   const handleAddTaskRow = () => {
+    if (isBackdatedWeekLocked) return;
     setTaskEntries(prev => [...prev, { ...initialTaskRow }]);
   };
 
   const handleRemoveTaskRow = async (index, timesheetid) => {
+    if (isBackdatedWeekLocked) return; // Prevent deletions on backdated metrics
     if (timesheetid) {
       if (window.confirm("Delete this saved task permanently?")) {
         try {
@@ -171,6 +176,7 @@ const TimeSheetMaster = () => {
   };
 
   const handleRowFieldChange = (index, name, value) => {
+    if (isBackdatedWeekLocked) return;
     setTaskEntries(prev => prev.map((row, i) => {
       if (i !== index) return row;
       const updatedRow = { ...row, [name]: value };
@@ -187,6 +193,7 @@ const TimeSheetMaster = () => {
   };
 
   const handleSaveDay = async () => {
+    if (isBackdatedWeekLocked) return;
     setFormError(null);
     const emptyRows = taskEntries.filter(r => !r.tothrs && !r.totmin);
     if (emptyRows.length > 0 && taskEntries.length > 1) {
@@ -210,12 +217,10 @@ const TimeSheetMaster = () => {
 
     try {
       for (const entry of taskEntries) {
-        // Skip completely empty, un-saved rows
         if (!entry.timesheetid && (!entry.tothrs || entry.tothrs === '0') && (!entry.totmin || entry.totmin === '0') && !entry.comments) {
           continue; 
         }
 
-        // IMPORTANT FIXED BYPASS: Do not send approved records back to the database!
         if (entry.status === 1) {
           continue; 
         }
@@ -257,7 +262,6 @@ const TimeSheetMaster = () => {
   liveHrs += Math.floor(liveMins / 60);
   liveMins = liveMins % 60;
 
-  // The day is locked globally ONLY if all entries are approved
   const isAllApproved = taskEntries.length > 0 && taskEntries.every(t => t.timesheetid && t.status === 1);
 
   return (
@@ -327,7 +331,13 @@ const TimeSheetMaster = () => {
           <h3 style={{ margin: 0, color: '#334155', fontSize: '16px' }}>
             Entries for <span style={{ color: '#2b7da1' }}>{new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
           </h3>
-          {isAllApproved && <span style={{ padding: '4px 10px', background: '#ecfdf5', color: C.success, borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>🔒 Locked (Approved)</span>}
+          
+          {/* FIXED: Display warning badge if week offset represents backdated history layout */}
+          {isAllApproved ? (
+            <span style={{ padding: '4px 10px', background: '#ecfdf5', color: C.success, borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>🔒 Locked (Approved)</span>
+          ) : isBackdatedWeekLocked ? (
+            <span style={{ padding: '4px 10px', background: '#fff2f2', color: C.danger, borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>🔒 Locked (Backdated - Contact HR)</span>
+          ) : null}
         </div>
 
         {formError && <div style={{ color: '#ef4444', background: '#fef2f2', padding: '10px', borderRadius: '6px', marginBottom: '16px', fontSize: '13px' }}>{formError}</div>}
@@ -345,17 +355,19 @@ const TimeSheetMaster = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {taskEntries.map((row, index) => {
             const isApproved = row.timesheetid && row.status === 1;
+            // FIXED: Row inputs get disabled natively if isBackdatedWeekLocked is true
+            const isRowDisabled = isApproved || isAllApproved || isBackdatedWeekLocked;
 
             return (
               <div key={index} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ ...styles.entryRow, opacity: isApproved ? 0.75 : 1 }}>
+                <div style={{ ...styles.entryRow, opacity: isRowDisabled ? 0.75 : 1 }}>
                   
                   {/* Classification */}
                   <div style={{ flex: 0.8 }}>
                     <select 
                       value={row.billingType} 
                       onChange={(e) => handleRowFieldChange(index, 'billingType', e.target.value)} 
-                      disabled={isApproved || isAllApproved}
+                      disabled={isRowDisabled}
                       style={styles.inlineSelect}
                     >
                       <option value="billable">Billable</option>
@@ -370,7 +382,7 @@ const TimeSheetMaster = () => {
                         value={row.projectid} 
                         options={projects} 
                         onChange={(e) => handleRowFieldChange(index, 'projectid', e.target.value)} 
-                        disabled={isApproved || isAllApproved}
+                        disabled={isRowDisabled}
                         defaultLabel="Select Proj..." 
                       />
                   ) : (
@@ -385,7 +397,7 @@ const TimeSheetMaster = () => {
                         value={row.taskid} 
                         options={tasks} 
                         onChange={(e) => handleRowFieldChange(index, 'taskid', e.target.value)} 
-                        disabled={isApproved || isAllApproved}
+                        disabled={isRowDisabled}
                         defaultLabel="Select Task..." 
                       />
                     ) : (
@@ -399,7 +411,7 @@ const TimeSheetMaster = () => {
                       type="number" min="0" max="24" 
                       value={row.tothrs} 
                       onChange={(e) => handleRowFieldChange(index, 'tothrs', e.target.value)} 
-                      disabled={isApproved || isAllApproved}
+                      disabled={isRowDisabled}
                       style={{ ...styles.inlineInput, textAlign: 'center' }} 
                       placeholder="0"
                     />
@@ -409,7 +421,7 @@ const TimeSheetMaster = () => {
                       type="number" min="0" max="59" 
                       value={row.totmin} 
                       onChange={(e) => handleRowFieldChange(index, 'totmin', e.target.value)} 
-                      disabled={isApproved || isAllApproved}
+                      disabled={isRowDisabled}
                       style={{ ...styles.inlineInput, textAlign: 'center' }} 
                       placeholder="0"
                     />
@@ -421,15 +433,15 @@ const TimeSheetMaster = () => {
                       type="text" 
                       value={row.comments} 
                       onChange={(e) => handleRowFieldChange(index, 'comments', e.target.value)} 
-                      disabled={isApproved || isAllApproved}
+                      disabled={isRowDisabled}
                       style={styles.inlineInput} 
-                      placeholder="What did you work on?"
+                      placeholder={isBackdatedWeekLocked ? "Locked" : "What did you work on?"}
                     />
                   </div>
 
                   {/* Row Delete Action */}
                   <div style={{ flex: 0.5, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                    {!isApproved && !isAllApproved && (
+                    {!isRowDisabled && (
                       <button 
                         onClick={() => handleRemoveTaskRow(index, row.timesheetid)} 
                         style={styles.iconBtn}
@@ -441,7 +453,6 @@ const TimeSheetMaster = () => {
                   </div>
                 </div>
 
-                {/* Manager Rejection Feedback Notification */}
                 {row.status === 2 && row.rejection_comment && (
                   <div style={styles.rejectionFeedbackBanner}>
                     ⚠️ <strong>Correction Required:</strong> {row.rejection_comment}
@@ -454,7 +465,8 @@ const TimeSheetMaster = () => {
 
         <div style={styles.entryFooter}>
           <div style={{ flex: 1 }}>
-            {!isAllApproved && (
+            {/* FIXED: Hiding action triggers if week offset is locked */}
+            {!isAllApproved && !isBackdatedWeekLocked && (
               <button onClick={handleAddTaskRow} style={styles.addRowBtn}>+ Add Another Task</button>
             )}
           </div>
@@ -466,9 +478,10 @@ const TimeSheetMaster = () => {
           </div>
 
           <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
-            {!isAllApproved && (
+            {/* FIXED: Hiding Save triggers if week offset is locked */}
+            {!isAllApproved && !isBackdatedWeekLocked && (
               <button onClick={handleSaveDay} disabled={isSubmitting} style={styles.saveBtn}>
-                {isSubmitting ? 'Saving...' : 'Save Day Logs'}
+                {isSubmitting ? 'Saving...' : 'Save Work'}
               </button>
             )}
           </div>

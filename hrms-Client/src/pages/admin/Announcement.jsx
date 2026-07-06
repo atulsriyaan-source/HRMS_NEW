@@ -5,20 +5,21 @@ const AnnouncementMaster = () => {
   const [announcements, setAnnouncements] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Modal Form Management States
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editId, setEditId] = useState(null);
   const [formError, setFormError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // FIXED: Added 'Description' fields initialization anchor parameters
   const initialFormState = {
     Notice: '',
+    Description: '',
     NoticeDate: '',
     EndDate: '',
   };
   const [formData, setFormData] = useState(initialFormState);
-  const [selectedFile, setSelectedFile] = useState(null); // NEW: Track uploaded file binary
+  const [selectedFile, setSelectedFile] = useState(null); 
 
   const fetchAnnouncements = async () => {
     setIsLoading(true);
@@ -42,19 +43,21 @@ const AnnouncementMaster = () => {
       ...initialFormState,
       NoticeDate: new Date().toISOString().split('T')[0]
     });
-    setSelectedFile(null); // Clear previous file uploads
+    setSelectedFile(null); 
     setIsEditMode(false);
     setFormError(null);
     setIsModalOpen(true);
   };
 
   const openEditModal = (item) => {
+    // FIXED: Hydrating 'Description' attribute block for update sequence routing
     setFormData({
       Notice: item.Notice,
+      Description: item.Description || '',
       NoticeDate: item.NoticeDate ? new Date(item.NoticeDate).toISOString().split('T')[0] : '',
       EndDate: item.EndDate ? new Date(item.EndDate).toISOString().split('T')[0] : ''
     });
-    setSelectedFile(null); // Reset file selection unless changed
+    setSelectedFile(null); 
     setEditId(item.id);
     setIsEditMode(true);
     setFormError(null);
@@ -66,7 +69,6 @@ const AnnouncementMaster = () => {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  // NEW: Handle file selection events
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
@@ -78,13 +80,13 @@ const AnnouncementMaster = () => {
     setIsSubmitting(true);
     setFormError(null);
 
-    // Build standard multipart layout form body instead of plain JSON maps
+    // FIXED: Added description processing strings inside multipart structure configuration
     const dataPayload = new FormData();
     dataPayload.append('Notice', formData.Notice);
+    dataPayload.append('Description', formData.Description);
     dataPayload.append('NoticeDate', formData.NoticeDate);
     if (formData.EndDate) dataPayload.append('EndDate', formData.EndDate);
     
-    // Attach the actual binary file if it exists
     if (selectedFile) {
       dataPayload.append('Photo', selectedFile);
     }
@@ -97,7 +99,6 @@ const AnnouncementMaster = () => {
     try {
       const response = await fetch(url, {
         method: method,
-        // CRITICAL: No Content-Type headers here! Browser sets it dynamically.
         body: dataPayload, 
       });
 
@@ -139,14 +140,14 @@ const AnnouncementMaster = () => {
         <button onClick={openAddModal} style={styles.addBtn}>+ Create Announcement</button>
       </div>
 
-      {/* Table Section */}
       <div style={styles.tableContainer}>
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
           <thead style={{ borderBottom: `2px solid ${C.borderLight}` }}>
             <tr>
               <th style={styles.th}>ID</th>
-              <th style={styles.th}>Notice Content</th>
-              <th style={styles.th}>Image Preview</th> {/* Added column for visual validation */}
+              <th style={styles.th}>Title / Notice</th>
+              <th style={styles.th}>Description</th> {/* FIXED: Column Added */}
+              <th style={styles.th}>Image Preview</th> 
               <th style={styles.th}>Notice Date</th>
               <th style={styles.th}>Created Date</th>
               <th style={styles.th}>End Date</th>
@@ -157,11 +158,15 @@ const AnnouncementMaster = () => {
             {announcements.map((item) => (
               <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
                 <td style={styles.td}>#{item.id}</td>
-                <td style={{ ...styles.td, maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <td style={{ ...styles.td, maxWidth: '150px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   <strong style={{ color: C.secondary }}>{item.Notice}</strong>
                 </td>
                 
-                {/* Dynamically source previews straight from backend route assets configuration */}
+                {/* FIXED: Dynamic inline tracking content mapping display box */}
+                <td style={{ ...styles.td, maxWidth: '220px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <span style={{ color: C.text }}>{item.Description || <span style={{color: C.muted, fontSize: '12px'}}>No Description</span>}</span>
+                </td>
+
                 <td style={styles.td}>
                   {item.Photo ? (
                     <img 
@@ -194,7 +199,6 @@ const AnnouncementMaster = () => {
         )}
       </div>
 
-      {/* MODAL CONFIG */}
       {isModalOpen && (
         <div style={styles.modalOverlay}>
           <div style={styles.modalContent}>
@@ -207,14 +211,27 @@ const AnnouncementMaster = () => {
 
             <form onSubmit={handleFormSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <label style={styles.label}>Notice Announcement Text *</label>
-                <textarea 
+                <label style={styles.label}>Notice Header / Title *</label>
+                <input 
+                  type="text"
                   name="Notice" 
                   value={formData.Notice} 
                   onChange={handleInputChange} 
                   required 
-                  rows={3}
-                  placeholder="Type the message description here for all employees..."
+                  placeholder="e.g., Independence Day Holiday Notice"
+                  style={styles.input}
+                />
+              </div>
+
+              {/* FIXED: Form Area Input Node Injection for Description tracking */}
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <label style={styles.label}>Detailed Description / Content Block</label>
+                <textarea 
+                  name="Description" 
+                  value={formData.Description} 
+                  onChange={handleInputChange} 
+                  rows={4}
+                  placeholder="Type full instructions or comprehensive information context updates here..."
                   style={{ ...styles.input, resize: 'none', fontFamily: 'inherit' }}
                 />
               </div>
@@ -230,7 +247,6 @@ const AnnouncementMaster = () => {
                 </div>
               </div>
 
-              {/* UPDATED: Converted string link configurations to native local filesystem browser */}
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <label style={styles.label}>Upload Banner / Attachment Image (Optional)</label>
                 <input 

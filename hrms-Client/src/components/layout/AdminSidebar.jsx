@@ -11,7 +11,9 @@ import {
   FiLayers,
   FiChevronDown,
   FiChevronRight,
-  FiStar
+  FiStar,
+  FiClipboard,
+  FiPieChart // New icon imported for the graphical data view
 } from "react-icons/fi";
 
 const navItems = [
@@ -19,7 +21,7 @@ const navItems = [
   {
     label: "Master List",
     icon: <FiLayers />,
-    hideForRoles: ["HR"], // Add a flag specifying which roles cannot see this item
+    hideForRoles: ["HR"], 
     children: [
       { label: "Departments", path: "/admin/departments", icon: <FiBriefcase /> },
       { label: "Leaves", path: "/admin/adminleaves", icon: <FiCalendar /> },
@@ -29,23 +31,25 @@ const navItems = [
       { label: "Projects", path: "/admin/projects", icon: <FiCalendar /> },
     ],
   },
-  { label: "Employees", path: "/admin/employees", icon: <FiUsers /> },
+  // =========================================================================
+  // UPDATED: Employees Parent converted to Dropdown with List & Graph Views
+  // =========================================================================
+  { 
+    label: "Employees", 
+    icon: <FiUsers />, 
+    children: [
+      { label: "All Employees", path: "/admin/employees", icon: <FiUsers /> },
+      { label: "Employee Analytics", path: "/admin/employees/analytics", icon: <FiPieChart /> }
+    ]
+  },
+  { label: "Resignations", path: "/admin/resignations", icon: <FiUsers /> },
   {
-  label: "Recruitment",
+    label: "Recruitment",
     icon: <FiUsers />,
     children: [
-      {
-        label: "Candidates",
-        path: "/admin/Recruitment/candidates",
-      },
-      {
-        label: "Interview Pipeline",
-        path: "/admin/Recruitment/interviews",
-      },
-      {
-        label: "Selected",
-        path: "/admin/Recruitment/selected",
-      },
+      { label: "Candidates", path: "/admin/Recruitment/candidates" },
+      { label: "Interview Pipeline", path: "/admin/Recruitment/interviews" },
+      { label: "Selected", path: "/admin/Recruitment/selected" },
     ],
   },
   { label: "TimeSheet", path: "/admin/timesheet", icon: <FiCalendar /> },
@@ -59,21 +63,23 @@ const navItems = [
     path: "/admin/leaves",
     icon: <FiCalendar />,
   },
+  {
+    label: "Service Requests",
+    path: "/admin/requests",
+    icon: <FiClipboard />,
+  }
 ];
 
 export default function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Track the logged-in user's role
   const [userRole, setUserRole] = useState("");
   const [openMenus, setOpenMenus] = useState({});
 
-  // Fetch the role on component mount
   useEffect(() => {
-    // Replace 'role' with the exact key name you use to save user data on login
     const savedRole = localStorage.getItem("role") || sessionStorage.getItem("role") || "";
-    setUserRole(savedRole.toUpperCase()); // Normalizing to uppercase to avoid case mismatch
+    setUserRole(savedRole.toUpperCase()); 
   }, []);
 
   const handleLogout = () => {
@@ -82,7 +88,6 @@ export default function Sidebar() {
     navigate("/");
   };
 
-  // Auto-open the dropdown if a child route is currently active
   useEffect(() => {
     const newOpenMenus = { ...openMenus };
     navItems.forEach((item) => {
@@ -115,12 +120,10 @@ export default function Sidebar() {
 
       <nav style={styles.nav}>
         {navItems.map((item) => {
-          // Check if the current menu item should be hidden for the user's role
           if (item.hideForRoles && item.hideForRoles.includes(userRole)) {
             return null;
           }
 
-          // Render Dropdown Menu
           if (item.children) {
             const isOpen = openMenus[item.label];
             const isChildActive = item.children.some((child) => child.path === location.pathname);
@@ -149,7 +152,6 @@ export default function Sidebar() {
                   </span>
                 </div>
 
-                {/* Dropdown Children */}
                 {isOpen && (
                   <div style={styles.dropdownList}>
                     {item.children.map((child) => {
@@ -175,11 +177,10 @@ export default function Sidebar() {
             );
           }
 
-          // Render Standard Menu Item
           const active = location.pathname === item.path;
           return (
             <Link
-              key={item.path}
+              key={item.label}
               to={item.path}
               style={{
                 ...styles.navItem,
@@ -210,7 +211,6 @@ export default function Sidebar() {
   );
 }
 
-// ... keeping your exact same inline styles object below untouched
 const styles = {
   sidebar: {
     width: "250px",

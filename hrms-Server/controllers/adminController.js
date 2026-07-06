@@ -25,10 +25,11 @@ const sanitizeDbDates = (dateValue, isRequiredField = false) => {
 
 exports.getAllEmployees = async (req, res) => {
     try {
+        // FIXED: ArchiveStatus aur Status dono ke constraints hata diye hain 
+        // taaki saara active, inactive aur suspended data frontend filters tak jaa sake.
         const query = `
-            SELECT EmployeeID, FirstName, LastName, EmailId, role, Status 
+            SELECT EmployeeID, FirstName, LastName, EmailId, role, Status, Department, StartDate, ArchiveStatus
             FROM employee 
-            WHERE ArchiveStatus = '0' AND Status = 'Active'
             ORDER BY EmployeeID DESC
         `;
         const [employees] = await db.query(query);
@@ -111,12 +112,23 @@ exports.getAnnouncements = async (req, res) => {
 
 exports.getAllSupervisors = async (req, res) => {
     try {
-        const query = `SELECT * FROM employee WHERE role IN ('supervisior') ORDER BY EmployeeID DESC`;
+        const query = `SELECT * FROM employee WHERE role IN ('manager') ORDER BY EmployeeID DESC`;
         const [rows] = await db.query(query);
         res.status(200).json(rows);
     } catch (error) {
         console.error("Error fetching supervisors API:", error.message);
         res.status(500).json({ message: "Failed to fetch supervisors", error: error.message });
+    }
+};
+
+exports.getAllInDirectSupervisors = async (req, res) => {
+    try {
+        const query = `SELECT * FROM employee WHERE role IN ('hr') ORDER BY EmployeeID DESC`;
+        const [rows] = await db.query(query);
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error("Error fetching in-direct supervisors API:", error.message);
+        res.status(500).json({ message: "Failed to fetch in-direct supervisors", error: error.message });
     }
 };
 
@@ -170,6 +182,69 @@ exports.getClientsLookup = async (req, res) => {
     console.error(error);
     res.status(500).json({ message: 'Failed to load reference client mapping dictionary.' });
   }
+};
+
+
+exports.getTeamTimesheets = async (req, res) => {
+    try {
+        const { supervisorId, role } = req.query; 
+
+        if (!supervisorId) {
+            return res.status(400).json({ message: "Missing supervisor authentication parameter context." });
+        }
+
+        // Check if the user has global oversight capabilities
+        const isGlobalAdmin = (role === 'admin' || role === 'hr' || role === 'leader');
+
+        let query = "";
+        let queryParams = [];
+
+        if (isGlobalAdmin) {
+            // GLOBAL OVERSIGHT: Fetch ALL timesheets across the company
+            query = `
+                SELECT 
+                    t.*, 
+                    e.FirstName, e.LastName,
+                    e.DirectSupervisor, e.IndirectSupervisor,
+                    d.Department as DepartmentName
+                FROM pms_timesheet t
+                LEFT JOIN employee e ON t.employeeid = e.EmployeeID
+                LEFT JOIN department d ON t.departmentid = d.id
+                ORDER BY t.timesheetdate DESC, t.employeeid ASC, t.timesheetid ASC
+            `;
+        } else {
+            // MANAGER OVERSIGHT: Fetch only employees assigned to this supervisor
+            const [supRows] = await db.query(
+                `SELECT CONCAT(FirstName, ' ', LastName) AS FullName FROM employee WHERE EmployeeID = ?`, 
+                [supervisorId]
+            );
+
+            const supervisorName = supRows.length > 0 ? supRows[0].FullName : '';
+
+            query = `
+                SELECT 
+                    t.*, 
+                    e.FirstName, e.LastName,
+                    e.DirectSupervisor, e.IndirectSupervisor,
+                    d.Department as DepartmentName
+                FROM pms_timesheet t
+                LEFT JOIN employee e ON t.employeeid = e.EmployeeID
+                LEFT JOIN department d ON t.departmentid = d.id
+                WHERE e.DirectSupervisor = ? 
+                   OR e.IndirectSupervisor = ?
+                   OR e.DirectSupervisor = ? 
+                   OR e.IndirectSupervisor = ?
+                ORDER BY t.timesheetdate DESC, t.employeeid ASC, t.timesheetid ASC
+            `;
+            queryParams = [supervisorName, supervisorName, supervisorId, supervisorId];
+        }
+
+        const [rows] = await db.query(query, queryParams);
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error("Error fetching team timesheets:", error);
+        res.status(500).json({ message: "Failed to load timesheets.", error: error.message });
+    }
 };
 
 // ==========================================
@@ -236,18 +311,20 @@ exports.addEmployeeStatus = async (req, res) => {
 
 exports.addAnnouncement = async (req, res) => {
     try {
-        const { Notice, NoticeDate, EndDate, CreatedBy } = req.body;
+        // FIXED: Added Description parameter from payload destruction
+        const { Notice, Description, NoticeDate, EndDate, CreatedBy } = req.body;
         const today = new Date().toISOString().split('T')[0];
         const photoPath = req.file ? req.file.filename : ''; 
 
         const query = `
             INSERT INTO noticeboard 
-            (Notice, Photo, NoticeDate, CreatedDate, EndDate, ModifiedDate, CreatedBy) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (Notice, Description, Photo, NoticeDate, CreatedDate, EndDate, ModifiedDate, CreatedBy) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const creatorId = CreatedBy || 1; 
 
-        const [result] = await db.query(query, [Notice, photoPath, NoticeDate, today, EndDate || null, today, creatorId]);
+        // FIXED: Mapped Description value directly into database binding query block
+        const [result] = await db.query(query, [Notice, Description || "", photoPath, NoticeDate, today, EndDate || null, today, creatorId]);
         res.status(201).json({ message: "Announcement published successfully!", id: result.insertId });
     } catch (error) {
         console.error("Error adding announcement:", error);
@@ -397,26 +474,28 @@ exports.updateEmployeeStatus = async (req, res) => {
 exports.updateAnnouncement = async (req, res) => {
     try {
         const { id } = req.params;
-        const { Notice, NoticeDate, EndDate } = req.body;
+        // FIXED: Added Description destructured parameter tracking
+        const { Notice, Description, NoticeDate, EndDate } = req.body;
         const today = new Date().toISOString().split('T')[0];
 
         let query = '';
         let queryParams = [];
 
+        // FIXED: Included Description inside query maps safely
         if (req.file) {
             query = `
                 UPDATE noticeboard 
-                SET Notice = ?, Photo = ?, NoticeDate = ?, EndDate = ?, ModifiedDate = ? 
+                SET Notice = ?, Description = ?, Photo = ?, NoticeDate = ?, EndDate = ?, ModifiedDate = ? 
                 WHERE id = ?
             `;
-            queryParams = [Notice, req.file.filename, NoticeDate, EndDate || null, today, id];
+            queryParams = [Notice, Description || "", req.file.filename, NoticeDate, EndDate || null, today, id];
         } else {
             query = `
                 UPDATE noticeboard 
-                SET Notice = ?, NoticeDate = ?, EndDate = ?, ModifiedDate = ? 
+                SET Notice = ?, Description = ?, NoticeDate = ?, EndDate = ?, ModifiedDate = ? 
                 WHERE id = ?
             `;
-            queryParams = [Notice, NoticeDate, EndDate || null, today, id];
+            queryParams = [Notice, Description || "", NoticeDate, EndDate || null, today, id];
         }
 
         const [result] = await db.query(query, queryParams);
@@ -604,66 +683,4 @@ exports.deleteProject = async (req, res) => {
     console.error(error);
     res.status(500).json({ message: 'Database constraint restriction prevented dropping row.' });
   }
-};
-
-exports.getTeamTimesheets = async (req, res) => {
-    try {
-        const { supervisorId, role } = req.query; 
-
-        if (!supervisorId) {
-            return res.status(400).json({ message: "Missing supervisor authentication parameter context." });
-        }
-
-        // Check if the user has global oversight capabilities
-        const isGlobalAdmin = (role === 'admin' || role === 'hr' || role === 'leader');
-
-        let query = "";
-        let queryParams = [];
-
-        if (isGlobalAdmin) {
-            // GLOBAL OVERSIGHT: Fetch ALL timesheets across the company
-            query = `
-                SELECT 
-                    t.*, 
-                    e.FirstName, e.LastName,
-                    e.DirectSupervisor, e.IndirectSupervisor,
-                    d.Department as DepartmentName
-                FROM pms_timesheet t
-                LEFT JOIN employee e ON t.employeeid = e.EmployeeID
-                LEFT JOIN department d ON t.departmentid = d.id
-                ORDER BY t.timesheetdate DESC, t.employeeid ASC, t.timesheetid ASC
-            `;
-        } else {
-            // MANAGER OVERSIGHT: Fetch only employees assigned to this supervisor
-            const [supRows] = await db.query(
-                `SELECT CONCAT(FirstName, ' ', LastName) AS FullName FROM employee WHERE EmployeeID = ?`, 
-                [supervisorId]
-            );
-
-            const supervisorName = supRows.length > 0 ? supRows[0].FullName : '';
-
-            query = `
-                SELECT 
-                    t.*, 
-                    e.FirstName, e.LastName,
-                    e.DirectSupervisor, e.IndirectSupervisor,
-                    d.Department as DepartmentName
-                FROM pms_timesheet t
-                LEFT JOIN employee e ON t.employeeid = e.EmployeeID
-                LEFT JOIN department d ON t.departmentid = d.id
-                WHERE e.DirectSupervisor = ? 
-                   OR e.IndirectSupervisor = ?
-                   OR e.DirectSupervisor = ? 
-                   OR e.IndirectSupervisor = ?
-                ORDER BY t.timesheetdate DESC, t.employeeid ASC, t.timesheetid ASC
-            `;
-            queryParams = [supervisorName, supervisorName, supervisorId, supervisorId];
-        }
-
-        const [rows] = await db.query(query, queryParams);
-        res.status(200).json(rows);
-    } catch (error) {
-        console.error("Error fetching team timesheets:", error);
-        res.status(500).json({ message: "Failed to load timesheets.", error: error.message });
-    }
 };
