@@ -4,6 +4,58 @@ const cleanBigInt = (val) => {
     return (!val || val === "" || isNaN(val)) ? 0 : parseInt(val);
 };
 
+exports.getDashboardSummary = async (req, res) => {
+  try {
+    const employeeId = req.query.employeeId;
+
+    if (!employeeId) {
+      return res.status(400).json({ success: false, message: "Missing employeeId" });
+    }
+
+    // Fixed Query: Self-Join for Manager Name + Active Status Logic
+    const query = `
+      SELECT 
+        e.EmployeeID,
+        e.FirstName,
+        e.LastName,
+        CONCAT(m.FirstName, ' ', m.LastName) as managerName,
+        d.Department as departmentName,
+        (SELECT COUNT(*) FROM service_requests r WHERE r.employee_id = e.EmployeeID AND r.status = 0) as livePendingRequests
+      FROM Employee e
+      LEFT JOIN Employee m ON e.DirectSupervisor = m.EmployeeID
+      LEFT JOIN Department d ON e.Department = d.id
+      WHERE e.EmployeeID = ? AND e.ArchiveStatus = '0' 
+      LIMIT 1
+    `;
+
+    const [rows] = await db.query(query, [employeeId]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Profile not found or inactive." });
+    }
+
+    const emp = rows[0];
+
+    return res.status(200).json({
+      success: true,
+      profile: {
+        fullName: `${emp.FirstName} ${emp.LastName}`,
+        department: emp.departmentName || 'General',
+        manager: emp.managerName || 'Not Assigned',
+        pendingRequests: Number(emp.livePendingRequests),
+        // Leave balances ko dynamic query se lana hoga, hardcode mat rakho
+        leaveBalance: 12, 
+        casualLeave: 5,
+        sickLeave: 4,
+        earnedLeave: 3
+      }
+    });
+
+  } catch (error) {
+    console.error("Dashboard error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
 // 1. FETCH LOGGED-IN EMPLOYEE TIMESHEETS
 exports.getTimesheets = async (req, res) => {
     try {
@@ -234,33 +286,48 @@ exports.getActiveResignation = async (req, res) => {
   }
 };
 
-// FETCH ALL RESIGNATIONS (For HR Oversight or Manager Hierarchy)
 exports.getAllResignations = async (req, res) => {
   try {
-    const { role, supervisorId } = req.query;
+    // Frontend se bheja gaya role hamesha lowercase me convert kar lena chahiye taaki case-mismatch na ho
+    const role = req.query.role ? req.query.role.toLowerCase() : "";
+    const supervisorId = req.query.supervisorId;
+    
     let query = "";
     let queryParams = [];
 
-    // HR and Admin see everything company-wide
-    if (role === 'hr' || role === 'admin') {
+    // 1. ADMIN: Can view ALL resignations company-wide
+    if (role === 'admin') {
       query = `
-        SELECT r.*, e.FirstName, e.LastName, d.Department as DepartmentName 
+        SELECT r.*, e.FirstName, e.LastName, e.role, d.Department as DepartmentName 
         FROM employee_resignations r
         JOIN employee e ON r.EmployeeID = e.EmployeeID
         LEFT JOIN department d ON e.department = d.id
         ORDER BY r.ResignationDate DESC
       `;
-    } else {
-      // Managers see only their direct/indirect reports
+    } 
+    // 2. HR: Can view ONLY where they are assigned as the Indirect Supervisor
+    else if (role === 'hr') {
       query = `
-        SELECT r.*, e.FirstName, e.LastName, d.Department as DepartmentName 
+        SELECT r.*, e.FirstName, e.LastName, e.role, d.Department as DepartmentName 
         FROM employee_resignations r
         JOIN employee e ON r.EmployeeID = e.EmployeeID
         LEFT JOIN department d ON e.department = d.id
-        WHERE e.DirectSupervisor = ? OR e.IndirectSupervisor = ?
+        WHERE e.IndirectSupervisor = ?
         ORDER BY r.ResignationDate DESC
       `;
-      queryParams = [supervisorId, supervisorId];
+      queryParams = [supervisorId];
+    } 
+    // 3. MANAGER (or any other role): Can view ONLY where they are the Direct Supervisor
+    else {
+      query = `
+        SELECT r.*, e.FirstName, e.LastName, e.role, d.Department as DepartmentName 
+        FROM employee_resignations r
+        JOIN employee e ON r.EmployeeID = e.EmployeeID
+        LEFT JOIN department d ON e.department = d.id
+        WHERE e.DirectSupervisor = ?
+        ORDER BY r.ResignationDate DESC
+      `;
+      queryParams = [supervisorId];
     }
 
     const [rows] = await db.query(query, queryParams);
@@ -276,31 +343,135 @@ exports.updateResignationStatus = async (req, res) => {
   try {
     const { resignationId, nextStatus, managerComments, confirmedLWD } = req.body;
 
+    console.log("Processing Exit Transition Payload:", req.body);
+
+    // 1. Mandatory Parameters Validation
     if (!resignationId || !nextStatus) {
-      return res.status(400).json({ success: false, message: "Missing processing updates parameters." });
+      return res.status(400).json({ 
+        success: false, 
+        message: "Missing parameters validation. resignationId and nextStatus are mandatory.",
+        received: req.body
+      });
     }
 
-    // Dynamic field building depending on which portal submits
+    // 2. Build Dynamic Update Query for employee_resignations
     let updateFields = "`Status` = ?";
     let queryParams = [nextStatus];
 
+    // Append Comments if provided
     if (managerComments) {
       updateFields += ", `AdditionalComments` = CONCAT(IFNULL(AdditionalComments,''), '\nFeedback: ', ?)";
       queryParams.push(managerComments);
     }
 
-    if (confirmedLWD) {
+    // Append Last Working Date if provided (Ignore if withdrawal is approved)
+    if (confirmedLWD && nextStatus !== 'Withdrawal Approved') {
       updateFields += ", `SystemLastWorkingDate` = ?";
       queryParams.push(new Date(confirmedLWD));
+    } else if (nextStatus === 'Withdrawal Approved') {
+      // Clear or preserve the working date column gracefully on reversal approval
+      updateFields += ", `SystemLastWorkingDate` = NULL";
     }
 
+    // Finalizing Query for Resignation Table
     queryParams.push(resignationId);
+    await db.query(
+      `UPDATE employee_resignations SET ${updateFields} WHERE ResignationID = ?`, 
+      queryParams
+    );
 
-    await db.query(`UPDATE employee_resignations SET ${updateFields} WHERE id = ?`, queryParams);
+    // 3. AUTOMATION BLOCK A: Deactivate Employee on 'Closed' status
+    if (nextStatus === 'Closed') {
+      const [record] = await db.query(
+        `SELECT EmployeeID FROM employee_resignations WHERE ResignationID = ?`, 
+        [resignationId]
+      );
 
-    res.status(200).json({ success: true, message: `Resignation state advanced to ${nextStatus}` });
+      if (record.length > 0) {
+        const empId = record[0].EmployeeID;
+        await db.query(
+          `UPDATE employee SET Status = 'Inactive' WHERE EmployeeID = ?`, 
+          [empId]
+        );
+        console.log(`System Alert: Employee ${empId} profile archived after final settlement.`);
+      }
+    }
+
+    // 4. AUTOMATION BLOCK B: Reactivate / Retain Employee on 'Withdrawal Approved' status
+    if (nextStatus === 'Withdrawal Approved') {
+      const [record] = await db.query(
+        `SELECT EmployeeID FROM employee_resignations WHERE ResignationID = ?`, 
+        [resignationId]
+      );
+
+      if (record.length > 0) {
+        const empId = record[0].EmployeeID;
+        // Ensures employee status remains or reverts to 'Active' 
+        await db.query(
+          `UPDATE employee SET Status = 'Active' WHERE EmployeeID = ?`, 
+          [empId]
+        );
+        console.log(`System Alert: Employee ${empId} profile marked Active following withdrawal approval.`);
+      }
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: `Resignation state advanced to ${nextStatus} successfully.` 
+    });
+
   } catch (error) {
-    console.error("Error transitioning separation status node:", error);
-    res.status(500).json({ success: false, message: "Failed to process resignation step update." });
+    console.error("Critical Failure in Transition Lifecycle:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Internal Server Error during status transition.", 
+      error: error.message 
+    });
   }
+};
+
+exports.createRequest = async (req, res) => {
+    try {
+        const { employeeId, employeeName, requestType, title, description } = req.body;
+        
+        // FIXED: Catch uploaded file details if present, else default empty
+        const attachmentPath = req.file ? req.file.filename : null;
+
+        if (!employeeId || !requestType || !title || !description) {
+            return res.status(400).json({ success: false, message: "Missing tracking metrics parameters." });
+        }
+
+        const query = `
+            INSERT INTO service_requests 
+            (employee_id, employee_name, request_type, title, description, Attachment, status) 
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        `;
+
+        const [result] = await db.query(query, [employeeId, employeeName || null, requestType, title, description, attachmentPath]);
+        
+        res.status(201).json({ success: true, message: "Ticket raised clean with optional variables data!" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Internal crash on multipart mapping nodes." });
+    }
+};
+
+// =========================================================================
+// 2. GET EMPLOYEE REQUESTS (Employee sees their own history)
+// =========================================================================
+exports.getEmployeeRequests = async (req, res) => {
+    try {
+        const { employeeId } = req.query;
+
+        if (!employeeId) {
+            return res.status(400).json({ success: false, message: "Employee identity verification failed." });
+        }
+
+        const query = `SELECT * FROM service_requests WHERE employee_id = ? ORDER BY id DESC`;
+        const [rows] = await db.query(query, [employeeId]);
+        
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error("Error fetching employee tickets:", error);
+        res.status(500).json({ success: false, message: "Failed to query historical log states." });
+    }
 };

@@ -5,7 +5,7 @@ const multer = require('multer');
 const  { getAllEmployees, getAllDepartments, getAllLeaves, addLeaveType, getAllLeaveTypes, 
         addEmployee, getEmployeeById, updateEmployee, deleteEmployee, getEmployeeStatus, 
         addEmployeeStatus, updateEmployeeStatus, deleteEmployeeStatus, getAnnouncements, 
-        addAnnouncement, updateAnnouncement, deleteAnnouncement, getAllSupervisors,
+        addAnnouncement, updateAnnouncement, deleteAnnouncement, getAllSupervisors, getAllInDirectSupervisors,
       getClients, addClient, updateClient, deleteClient, getAllProjects, getProjectById,
      createProject, updateProject, deleteProject, getClientsLookup, getTeamTimesheets } = require('../controllers/adminController');
 
@@ -40,6 +40,7 @@ router.post('/announcements', upload.single('Photo'), addAnnouncement);
 router.put('/announcements/:id', upload.single('Photo'), updateAnnouncement);
 router.delete('/announcements/:id', deleteAnnouncement);
 router.get('/supervisors', getAllSupervisors)
+router.get('/in-direct-supervisors', getAllInDirectSupervisors)
 router.get('/clients', getClients);
 router.post('/clients', addClient);
 router.put('/clients/:id', updateClient);

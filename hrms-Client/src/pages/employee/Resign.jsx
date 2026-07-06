@@ -25,6 +25,9 @@ export default function EmployeeResign() {
   const [status, setStatus] = useState("Pending");
   const [acknowledged, setAcknowledged] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
+  
+  // State to store the active resignation ID for withdrawal
+  const [activeResignationId, setActiveResignationId] = useState(null); 
 
   const [form, setForm] = useState({
     resignationDate: "",
@@ -35,47 +38,53 @@ export default function EmployeeResign() {
 
   const noticePeriodDays = 90;
 
+  const fetchActiveResignationState = async () => {
+    try {
+      const storedUser = JSON.parse(localStorage.getItem("user"));
+      const empId = storedUser?.id || storedUser?.EmployeeID || "";
+
+      if (!empId) {
+        setPageLoading(false);
+        return;
+      }
+
+      const res = await fetch(`${apiUrl}/api/employee/active-resignation?employeeId=${empId}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+      });
+      const data = await res.json();
+
+      // CRITICAL MODIFICATION: If the resignation status is "Withdrawal Approved", 
+      // treat it as non-active so the employee can submit a fresh resignation request.
+      if (data.success && data.hasActiveResignation && data.data?.Status !== "Withdrawal Approved") {
+        const record = data.data;
+        setResignationSubmitted(true);
+        setShowConfirmModal(false);
+        setStatus(record.Status);
+        
+        setActiveResignationId(record.id || record.ResignationID || record.resignation_id);
+
+        const targetIndex = PROCESS_STEPS.findIndex(step => step.key.toLowerCase() === record.Status.toLowerCase());
+        setCurrentStepIndex(targetIndex !== -1 ? targetIndex : 0);
+      } else {
+        // Either no active record exists, or the last one was approved for withdrawal
+        setResignationSubmitted(false);
+        // Keep tracking the past ID or keep it null so a new entry forms cleanly
+        setActiveResignationId(null);
+        setStatus("Pending");
+      }
+    } catch (err) {
+      console.error("Failed to sync structural exit log tracking tracks:", err);
+    } finally {
+      setPageLoading(false);
+    }
+  };
+
   // --- 1. SYNC STATE FROM DATABASE ON MOUNT ---
   useEffect(() => {
-    const fetchActiveResignationState = async () => {
-      try {
-        // 1. Pull the user session data from localStorage
-        const storedUser = JSON.parse(localStorage.getItem("user"));
-        // Safely catch either lower 'id' or matching 'EmployeeID' property fields
-        const empId = storedUser?.id || storedUser?.EmployeeID || "";
-
-        if (!empId) {
-          console.warn("Skipping load: No active user session ID found in storage.");
-          setPageLoading(false);
-          return;
-        }
-
-        // 2. FIXED: Explicitly pass the parameter inside the URL string path!
-        const res = await fetch(`${apiUrl}/api/employee/active-resignation?employeeId=${empId}`, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        });
-        const data = await res.json();
-
-        if (data.success && data.hasActiveResignation) {
-          const record = data.data;
-          setResignationSubmitted(true);
-          setShowConfirmModal(false);
-          setStatus(record.Status);
-
-          const targetIndex = PROCESS_STEPS.findIndex(step => step.key.toLowerCase() === record.Status.toLowerCase());
-          setCurrentStepIndex(targetIndex !== -1 ? targetIndex : 0);
-        }
-      } catch (err) {
-        console.error("Failed to sync structural exit log tracking tracks:", err);
-      } finally {
-        setPageLoading(false);
-      }
-    };
-
     fetchActiveResignationState();
   }, []);
 
@@ -107,17 +116,12 @@ export default function EmployeeResign() {
       formData.append("attachment", form.attachment);
     }
 
-    // FIXED: Manually bundle active employee context details into payload to prevent backend req.user parsing crashes
     const storedUser = JSON.parse(localStorage.getItem("user"));
-    if (storedUser && storedUser.id) {
-      formData.append("employeeId", storedUser.id);
+    if (storedUser && (storedUser.id || storedUser.EmployeeID)) {
+      formData.append("employeeId", storedUser.id || storedUser.EmployeeID);
     } else {
       return alert("Session expired. Please log in again to authentic context parameters.");
     }
-
-    // Dynamic logging verification block
-    console.log("=== VERIFYING RESIGNATION FORM PAYLOAD ===");
-    console.log("Text fields compiled:", Object.fromEntries(formData));
 
     try {
       const res = await fetch(`${apiUrl}/api/employee/submit-resignation`, {
@@ -135,19 +139,57 @@ export default function EmployeeResign() {
       }
 
       alert("Resignation submitted successfully");
+      
+      // Reset form controls
+      setForm({ resignationDate: "", primaryReason: "", additionalComments: "", attachment: null });
+      setAcknowledged(false);
 
-      setResignationSubmitted(true);
-      setCurrentStepIndex(0); // Set to first step ('Submitted')
-      setStatus("Submitted");
+      // Refresh state from the backend to load the step tracking grid view interface
+      await fetchActiveResignationState();
+      
     } catch (err) {
       console.error(err);
       alert("Failed to submit resignation");
     }
   };
 
-  const handleWithdraw = () => {
-    if (window.confirm("Are you sure you want to withdraw your resignation? HR will need to approve this withdrawal.")) {
-      setStatus("Withdrawal Requested");
+  // --- 3. HANDLE WITHDRAWAL API CALL ---
+  const handleWithdraw = async () => {
+    if (!window.confirm("Are you sure you want to withdraw your resignation? HR will need to approve this withdrawal.")) {
+      return;
+    }
+
+    if (!activeResignationId) {
+      return alert("Error: Resignation record ID not found. Please refresh the page.");
+    }
+
+    try {
+      const payload = {
+        resignationId: activeResignationId,
+        nextStatus: "Withdrawal Requested",
+        managerComments: "Employee initiated a withdrawal request from the portal."
+      };
+
+      const res = await fetch(`${apiUrl}/api/employee/update-resignation-status`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      const data = await res.json();
+      
+      if (res.ok && data.success) {
+        alert("Withdrawal request sent successfully.");
+        setStatus("Withdrawal Requested");
+      } else {
+        alert(`Error: ${data.message}`);
+      }
+    } catch (err) {
+      console.error("Failed to withdraw:", err);
+      alert("Network error processing withdrawal.");
     }
   };
 
@@ -167,7 +209,7 @@ export default function EmployeeResign() {
         <p style={styles.subtitle}>Submit your resignation request and track its status</p>
       </div>
 
-      {/* Form View (Visible if no request logged yet) */}
+      {/* Form View (Visible if no active request is logged or if previous was approved for withdrawal) */}
       {!resignationSubmitted && (
         <div style={styles.card}>
           <h2 style={styles.sectionTitle}>Submit resignation</h2>

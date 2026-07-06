@@ -1,4 +1,3 @@
-
 const db = require("../config/db");
 const md5 = require("md5");
 
@@ -89,7 +88,6 @@ exports.getCandidateById = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 exports.getPipelineCandidates = async (req, res) => {
   try {
@@ -226,7 +224,6 @@ exports.getCandidateProfile = async (req, res) => {
   }
 };
 
-
 exports.scheduleInterview = async (req, res) => {
   try {
     const {
@@ -279,7 +276,6 @@ exports.scheduleInterview = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 exports.updateRoundOutcome = async (req, res) => {
   const conn = await db.getConnection();

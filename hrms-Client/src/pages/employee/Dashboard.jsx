@@ -13,27 +13,85 @@ export default function EmployeeDashboard() {
   const navigate = useNavigate();
   const [showDashboard, setShowDashboard] = useState(false);
   const [announcements, setAnnouncements] = useState([]);
+  
+  // --- Live Synchronized Employee State Matrix ---
+  const [liveProfile, setLiveProfile] = useState({
+    fullName: "Employee",
+    department: "...",
+    manager: "...",
+    leaveBalance: "0",
+    pendingRequests: 0, 
+    casualLeave: 0,
+    sickLeave: 0,
+    earnedLeave: 0
+  });
+  
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchAnnouncements = async () => {
+  // --- Dynamic Injection of Keyframes for the UI Loader Spinner ---
+  useEffect(() => {
+    if (!document.getElementById("spinner-keyframes")) {
+      const styleTag = document.createElement("style");
+      styleTag.id = "spinner-keyframes";
+      styleTag.innerHTML = `
+        @keyframes dashboardSpin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `;
+      document.head.appendChild(styleTag);
+    }
+  }, []);
+
+  const fetchDashboardData = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/admin/announcements');
-      if (response.ok) {
-        const data = await response.json();
-        setAnnouncements(data);
+      setIsLoading(true);
+      
+      // Defensive parsing looking at explicit item or JSON stringified payload structures
+      let storedEmployeeId = localStorage.getItem("employeeId"); 
+      if (!storedEmployeeId && localStorage.getItem("user")) {
+        try {
+          const parsedUser = JSON.parse(localStorage.getItem("user"));
+          storedEmployeeId = parsedUser.id || parsedUser.EmployeeID || parsedUser.employeeId;
+        } catch (e) {
+          console.error("Failed decoding text schema configuration from user object", e);
+        }
+      }
+
+      if (!storedEmployeeId) {
+        console.error("Contextual termination: No valid employee identifier located in storage mapping.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Query payload linking via explicit identifier parameter matching your update
+      const [announcementsRes, profileRes] = await Promise.all([
+        fetch('http://localhost:5000/api/admin/announcements'),
+        fetch(`http://localhost:5000/api/employee/dashboard-summary?employeeId=${storedEmployeeId}`)
+      ]);
+
+      if (announcementsRes.ok) {
+        const annData = await announcementsRes.json();
+        setAnnouncements(annData);
+      }
+
+      if (profileRes.ok) {
+        const profData = await profileRes.json();
+        if (profData.success) {
+          setLiveProfile(profData.profile);
+        }
       }
     } catch (err) {
-      console.error("Failed to fetch announcements:", err);
+      console.error("Dashboard lifecycle sync stream error:", err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchAnnouncements();
+    fetchDashboardData();
   }, []);
 
-  // Show carousel if announcements exist and dashboard not shown
   if (!showDashboard && announcements.length > 0 && !isLoading) {
     return (
       <AnnouncementCarousel 
@@ -52,9 +110,11 @@ export default function EmployeeDashboard() {
         alignItems: 'center', 
         minHeight: '88vh', 
         color: C.text,
-        fontSize: "16px"
+        fontSize: "15px",
+        fontFamily: "system-ui, sans-serif"
       }}>
-        Loading Dashboard...
+        <div style={styles.spinner}></div>
+        <span style={{ marginLeft: "12px" }}>Connecting Live SQL Data Matrices...</span>
       </div>
     );
   }
@@ -63,7 +123,7 @@ export default function EmployeeDashboard() {
     <div style={styles.page}>
       <div style={styles.pageHead}>
         <div>
-          <div style={styles.welcome}>Welcome Back</div>
+          <div style={styles.welcome}>Welcome Back, {liveProfile.fullName} 👋</div>
           <h1 style={styles.pageTitle}>Employee Dashboard</h1>
           <p style={styles.pageSub}>
             {new Date().toLocaleDateString("en-IN", {
@@ -76,13 +136,13 @@ export default function EmployeeDashboard() {
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Dynamic Data Summary Grid */}
       <div style={styles.statsGrid}>
         {[
-          { title: "Leave Balance", value: "12", icon: <FiCalendar />, color: C.primary, bg: "#e8f4fa" },
-          { title: "Pending Requests", value: "2", icon: <FiCheckCircle />, color: C.accent, bg: "#fde8ef" },
-          { title: "Department", value: "IT", icon: <FiBriefcase />, color: "#0f6e56", bg: "#e1f5ee" },
-          { title: "Manager", value: "Admin Staff", icon: <FiUser />, color: "#854f0b", bg: "#faeeda" },
+          { title: "Leave Balance", value: liveProfile.leaveBalance, icon: <FiCalendar />, color: C.primary, bg: "#e8f4fa" },
+          { title: "Pending Requests", value: liveProfile.pendingRequests, icon: <FiCheckCircle />, color: C.accent, bg: "#fde8ef" },
+          { title: "Department", value: liveProfile.department, icon: <FiBriefcase />, color: "#0f6e56", bg: "#e1f5ee" },
+          { title: "Manager", value: liveProfile.manager, icon: <FiUser />, color: "#854f0b", bg: "#faeeda" },
         ].map((item, index) => (
           <div key={index} style={styles.statCard}>
             <div style={{ ...styles.statIcon, background: item.bg, color: item.color }}>
@@ -94,13 +154,13 @@ export default function EmployeeDashboard() {
         ))}
       </div>
 
-      {/* Panels Row */}
+      {/* Panels Layout Blocks */}
       <div style={styles.panelGrid}>
         <div style={styles.panel}>
           <h3 style={styles.panelTitle}>Leave Summary</h3>
-          <div style={styles.leaveItem}>Casual Leave : 5</div>
-          <div style={styles.leaveItem}>Sick Leave : 4</div>
-          <div style={styles.leaveItem}>Earned Leave : 3</div>
+          <div style={styles.leaveItem}>Casual Leave : {liveProfile.casualLeave}</div>
+          <div style={styles.leaveItem}>Sick Leave : {liveProfile.sickLeave}</div>
+          <div style={styles.leaveItem}>Earned Leave : {liveProfile.earnedLeave}</div>
         </div>
 
         <div style={styles.panel}>
@@ -109,7 +169,7 @@ export default function EmployeeDashboard() {
             <div 
               key={item.id} 
               style={styles.noticeItem}
-              onClick={() => navigate(`/announcements/${item.id}`, { 
+              onClick={() => navigate(`/employee/announcements/${item.id}`, { 
                 state: { announcement: item } 
               })}
             >
@@ -144,7 +204,8 @@ const styles = {
     display: "flex", 
     flexDirection: "column", 
     gap: "32px", 
-    padding: "32px" 
+    padding: "32px",
+    fontFamily: "system-ui, -apple-system, sans-serif"
   },
   pageHead: { 
     display: "flex", 
@@ -190,10 +251,13 @@ const styles = {
     marginBottom: "20px" 
   },
   statValue: { 
-    fontSize: "36px", 
+    fontSize: "24px", // Adjusted down layout to fit names/departments comfortably inside cards
     fontWeight: "700", 
     color: C.text, 
-    marginBottom: "4px" 
+    marginBottom: "4px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis"
   },
   statTitle: { 
     color: C.muted, 
@@ -234,11 +298,14 @@ const styles = {
     fontSize: "14px", 
     color: C.text, 
     fontWeight: "500",
-    cursor: "pointer",
-    transition: "all 0.2s ease",
-    ":hover": {
-      background: C.inputBg,
-      borderColor: C.primary,
-    }
+    cursor: "pointer"
   },
+  spinner: {
+    width: "20px",
+    height: "20px",
+    border: "2px solid #cbd5e1",
+    borderTop: `2px solid ${C.primary}`,
+    borderRadius: "50%",
+    animation: "dashboardSpin 0.6s linear infinite" // Updated name binding to style injection mapping
+  }
 };
