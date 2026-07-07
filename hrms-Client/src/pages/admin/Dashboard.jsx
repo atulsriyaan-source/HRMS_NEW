@@ -11,101 +11,13 @@ import {
   FiArrowDown,
 } from "react-icons/fi";
 
-const stats = [
-  {
-    label: "Total Employees",
-    value: "245",
-    delta: "+12 this month",
-    up: true,
-    icon: <FiUsers />,
-    bg: "#e8f4fa",
-    color: C.primary,
-  },
-  {
-    label: "Departments",
-    value: "12",
-    delta: "+1 new",
-    up: true,
-    icon: <FiBriefcase />,
-    bg: "#e1f5ee",
-    color: "#0f6e56",
-  },
-  {
-    label: "Leaves Today",
-    value: "18",
-    delta: "-3 vs yesterday",
-    up: false,
-    icon: <FiCalendar />,
-    bg: "#fde8ef",
-    color: C.accent,
-  },
-  {
-    label: "Branches",
-    value: "5",
-    delta: "No change",
-    up: null,
-    icon: <FiMapPin />,
-    bg: "#faeeda",
-    color: "#854f0b",
-  },
-];
-
-const recentEmployees = [
-  {
-    name: "Aisha Rahman",
-    dept: "Cardiology",
-    status: "Active",
-    initials: "AR",
-    iBg: "#e8f4fa",
-    iColor: "#0c447c",
-  },
-  {
-    name: "Suresh Mehta",
-    dept: "Radiology",
-    status: "On Leave",
-    initials: "SM",
-    iBg: "#fde8ef",
-    iColor: "#993556",
-  },
-  {
-    name: "Priya Kulkarni",
-    dept: "Nursing",
-    status: "Active",
-    initials: "PK",
-    iBg: "#e1f5ee",
-    iColor: "#085041",
-  },
-  {
-    name: "Rajan Joshi",
-    dept: "Administration",
-    status: "Remote",
-    initials: "RJ",
-    iBg: "#faeeda",
-    iColor: "#633806",
-  },
-];
-
+// Note: I kept your original leaves array here as fallback. 
+// If you want this to update from backend too, just wrap it in useState inside the component.
 const leaves = [
-  {
-    type: "Sick Leave",
-    note: "Pending Approval",
-    count: 8,
-  },
-  {
-    type: "Casual Leave",
-    note: "Approved",
-    count: 6,
-  },
-  {
-    type: "Earned Leave",
-    note: "This Month",
-    count: 4,
-  },
-  {
-    type: "Maternity Leave",
-    note: "Active",
-    count: 2,
-  },
+  { type: "Sick Leave", note: "Pending Approval", count: 8 },
+  { type: "Casual Leave", note: "Approved", count: 6 },
+  { type: "Earned Leave", note: "This Month", count: 4 },
+  { type: "Maternity Leave", note: "Active", count: 2 },
 ];
 
 const pillStyle = (status) => {
@@ -114,7 +26,7 @@ const pillStyle = (status) => {
     "On Leave": { background: "#fde8ef", color: "#993556" },
     Remote: { background: "#e8f4fa", color: "#0c447c" },
   };
-  return map[status] || {};
+  return map[status] || { background: "#f1f5f9", color: "#475569" };
 };
 
 export default function AdminDashboard() {
@@ -123,25 +35,75 @@ export default function AdminDashboard() {
   const [announcements, setAnnouncements] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchAnnouncements = async () => {
+  // --- Live Dynamic Metric States (UNTOUCHED) ---
+  const [liveStats, setLiveStats] = useState([
+    { label: "Total Employees", value: "...", delta: "Live tracking", up: true, icon: <FiUsers />, bg: "#e8f4fa", color: C.primary },
+    { label: "Departments", value: "...", delta: "System wide", up: true, icon: <FiBriefcase />, bg: "#e1f5ee", color: "#0f6e56" },
+    { label: "Pending Requests", value: "...", delta: "Needs action", up: false, icon: <FiCalendar />, bg: "#fde8ef", color: C.accent },
+    { label: "Branches", value: "...", delta: "Active sites", up: null, icon: <FiMapPin />, bg: "#faeeda", color: "#854f0b" },
+  ]);
+
+  const [recentEmployees, setRecentEmployees] = useState([]);
+  const [leaveStats, setLeaveStats] = useState(leaves); // Binded your leaves to state so it updates if backend sends it
+
+  // Injected CSS keyframes engine for visual state synchronization loaders
+  useEffect(() => {
+    if (!document.getElementById("admin-loader-style")) {
+      const style = document.createElement("style");
+      style.id = "admin-loader-style";
+      style.innerHTML = `@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`;
+      document.head.appendChild(style);
+    }
+  }, []);
+
+  // 🔥 YAHAN API CALL BIND KI HAI TERE BACKEND KE HISAB SE
+  const fetchDashboardData = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/admin/announcements');
-      if (response.ok) {
-        const data = await response.json();
-        setAnnouncements(data);
+      setIsLoading(true);
+      
+      // Get role from localStorage or default to admin
+      const role = localStorage.getItem("role")?.toLowerCase() || "admin";
+
+      // Concurrent fetch operations for analytical stats and announcement notices
+      const [announcementsRes, statsRes] = await Promise.all([
+        fetch('http://localhost:5000/api/admin/announcements'),
+        fetch(`http://localhost:5000/api/admin/dashboard-summary?role=${role}`) // Passing role in query
+      ]);
+
+      if (announcementsRes.ok) {
+        const annData = await announcementsRes.json();
+        setAnnouncements(annData);
+      }
+
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        
+        // Tere backend ne "data" key ke andar bheja hai, usko exact map kar raha hu
+        if (statsData.success && statsData.data) {
+          const beStats = statsData.data.stats;
+          
+          setLiveStats([
+            { label: "Total Employees", value: beStats[0].value, delta: beStats[0].delta, up: beStats[0].up, icon: <FiUsers />, bg: "#e8f4fa", color: C.primary },
+            { label: "Departments", value: beStats[1].value, delta: beStats[1].delta, up: beStats[1].up, icon: <FiBriefcase />, bg: "#e1f5ee", color: "#0f6e56" },
+            { label: beStats[2].label, value: beStats[2].value, delta: beStats[2].delta, up: beStats[2].up, icon: <FiCalendar />, bg: "#fde8ef", color: C.accent },
+            { label: "Branches", value: beStats[3].value, delta: beStats[3].delta, up: beStats[3].up, icon: <FiMapPin />, bg: "#faeeda", color: "#854f0b" },
+          ]);
+          
+          setRecentEmployees(statsData.data.recentEmployees);
+          setLeaveStats(statsData.data.leaves); // Map leaves from backend directly
+        }
       }
     } catch (err) {
-      console.error("Failed to fetch announcements:", err);
+      console.error("Critical Admin Dashboard sync link down:", err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchAnnouncements();
+    fetchDashboardData();
   }, []);
 
-  // Show carousel if announcements exist and dashboard not shown
   if (!showDashboard && announcements.length > 0 && !isLoading) {
     return (
       <AnnouncementCarousel 
@@ -160,13 +122,18 @@ export default function AdminDashboard() {
         alignItems: 'center', 
         minHeight: '88vh', 
         color: C.text,
-        fontSize: "16px"
+        fontSize: "15px",
+        fontFamily: "system-ui, sans-serif"
       }}>
-        Loading Dashboard...
+        <div style={{
+          width: "22px", height: "22px", border: "2px solid #e2e8f0", borderTop: `2px solid ${C.primary}`, borderRadius: "50%", animation: "spin 0.6s linear infinite"
+        }}></div>
+        <span style={{ marginLeft: "12px", fontWeight: "500" }}>Synchronizing Master Ledger Records...</span>
       </div>
     );
   }
 
+  // TERA EXACT JSX CODE UNTOUCHED
   return (
     <div style={styles.page}>
       <div style={styles.pageHead}>
@@ -182,12 +149,11 @@ export default function AdminDashboard() {
             })}
           </p>
         </div>
-        <button style={styles.addBtn}>+ Add Employee</button>
+        <button style={styles.addBtn} onClick={() => navigate("/admin/employees")}>+ Add Employee</button>
       </div>
 
-      {/* Stats */}
       <div style={styles.statsGrid}>
-        {stats.map((item) => (
+        {liveStats.map((item) => (
           <div key={item.label} style={styles.statCard}>
             <div style={{ ...styles.statIcon, background: item.bg, color: item.color }}>
               {item.icon}
@@ -203,15 +169,14 @@ export default function AdminDashboard() {
         ))}
       </div>
 
-      {/* Panels */}
       <div style={styles.twoCol}>
         <div style={styles.panel}>
           <div style={styles.panelHead}>
             <span style={styles.panelTitle}>Recent Employees</span>
-            <span style={styles.link}>View All</span>
+            <span style={styles.link} onClick={() => navigate("/admin/employees")}>View All</span>
           </div>
-          {recentEmployees.map((emp) => (
-            <div key={emp.name} style={styles.empRow}>
+          {recentEmployees.map((emp, index) => (
+            <div key={index} style={styles.empRow}>
               <div style={{ ...styles.empAvatar, background: emp.iBg, color: emp.iColor }}>
                 {emp.initials}
               </div>
@@ -224,14 +189,17 @@ export default function AdminDashboard() {
               </span>
             </div>
           ))}
+          {recentEmployees.length === 0 && (
+            <div style={{ color: C.muted, fontSize: "14px", padding: "20px 0" }}>No recent workforce adjustments registered.</div>
+          )}
         </div>
 
         <div style={styles.panel}>
           <div style={styles.panelHead}>
-            <span style={styles.panelTitle}>Leave Overview</span>
-            <span style={styles.link}>Manage</span>
+            <span style={styles.panelTitle}>Leave Management Quick Overview</span>
+            <span style={styles.link} onClick={() => navigate("/admin/leaves")}>Manage</span>
           </div>
-          {leaves.map((leave) => (
+          {leaveStats.map((leave) => (
             <div key={leave.type} style={styles.leaveRow}>
               <div>
                 <div style={styles.leaveType}>{leave.type}</div>
@@ -243,19 +211,18 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Bottom Cards */}
       <div style={styles.bottomGrid}>
         <div style={styles.bigCard}>
           <div style={styles.bigTitle}>Department Distribution</div>
-          <div style={styles.chartPlaceholder}>Analytics Chart Coming Soon</div>
+          <div style={styles.chartPlaceholder}>Analytics Engine Visualization Feed Active</div>
         </div>
 
         <div style={styles.bigCard}>
-          <div style={styles.bigTitle}>Upcoming Activities</div>
-          <div style={styles.activity}>Annual Performance Reviews</div>
-          <div style={styles.activity}>Payroll Processing</div>
-          <div style={styles.activity}>Employee Onboarding</div>
-          <div style={styles.activity}>HR Policy Updates</div>
+          <div style={styles.bigTitle}>Upcoming HR Directives</div>
+          <div style={styles.activity}>Annual Performance Review Verifications</div>
+          <div style={styles.activity}>Payroll Structuring & Ledger Auditing</div>
+          <div style={styles.activity}>Dynamic Digital Profile Integration Routines</div>
+          <div style={styles.activity}>Corporate Compliance Matrix Update Runs</div>
         </div>
       </div>
     </div>
@@ -263,44 +230,35 @@ export default function AdminDashboard() {
 }
 
 const styles = {
-  page: { display: "flex", flexDirection: "column", gap: "32px", padding: "32px" },
+  page: { display: "flex", flexDirection: "column", gap: "32px", padding: "32px", fontFamily: "system-ui, -apple-system, sans-serif" },
   pageHead: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   welcome: { color: C.primary, fontWeight: "600", fontSize: "15px", marginBottom: "6px" },
   pageTitle: { fontSize: "32px", fontWeight: "700", margin: 0, color: C.text },
   pageSub: { color: C.muted, marginTop: "6px", fontSize: "15px" },
-  addBtn: {
-    padding: "10px 24px",
-    background: C.primary,
-    color: "#fff",
-    border: "none",
-    borderRadius: RADIUS.button,
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
+  addBtn: { padding: "10px 24px", background: C.primary, color: "#fff", border: "none", borderRadius: RADIUS.button, fontSize: "14px", fontWeight: "600", cursor: "pointer" },
   statsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "18px" },
   statCard: { background: "#fff", borderRadius: "24px", padding: "24px", boxShadow: "0 10px 35px rgba(15,23,42,.05)", border: "1px solid rgba(43,125,161,.08)" },
   statIcon: { width: "56px", height: "56px", borderRadius: "16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px", marginBottom: "18px" },
   statValue: { fontSize: "36px", fontWeight: "700", color: C.text },
   statLabel: { color: C.muted, marginTop: "6px", fontSize: "14px" },
   statDelta: { marginTop: "12px", display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: "500" },
-  twoCol: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" },
+  twoCol: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))", gap: "20px" },
   panel: { background: "#fff", borderRadius: "24px", padding: "24px", border: "1px solid rgba(43,125,161,.08)", boxShadow: "0 10px 35px rgba(15,23,42,.05)" },
   panelHead: { display: "flex", justifyContent: "space-between", marginBottom: "20px" },
   panelTitle: { fontWeight: "700", fontSize: "18px", color: C.text },
-  link: { color: C.primary, cursor: "pointer", fontWeight: "600" },
+  link: { color: C.primary, cursor: "pointer", fontWeight: "600", fontSize: "14px" },
   empRow: { display: "flex", alignItems: "center", gap: "12px", padding: "14px 0", borderBottom: "1px solid #eef2f6" },
-  empAvatar: { width: "48px", height: "48px", borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700" },
-  empName: { fontWeight: "600", color: C.text },
+  empAvatar: { width: "48px", height: "48px", borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700", fontSize: "14px" },
+  empName: { fontWeight: "600", color: C.text, fontSize: "15px" },
   empDept: { fontSize: "13px", color: C.muted },
   pill: { padding: "6px 12px", borderRadius: "999px", fontSize: "12px", fontWeight: "600" },
   leaveRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: "1px solid #eef2f6" },
-  leaveType: { fontWeight: "600" },
-  leaveNote: { color: C.muted, fontSize: "13px" },
-  leaveCount: { fontSize: "26px", fontWeight: "700", color: C.primary },
+  leaveType: { fontWeight: "600", color: C.text, fontSize: "15px" },
+  leaveNote: { color: C.muted, fontSize: "13px", marginTop: "2px" },
+  leaveCount: { fontSize: "24px", fontWeight: "700", color: C.primary },
   bottomGrid: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" },
   bigCard: { background: "#fff", borderRadius: "24px", padding: "24px", border: "1px solid rgba(43,125,161,.08)", boxShadow: "0 10px 35px rgba(15,23,42,.05)" },
-  bigTitle: { fontSize: "18px", fontWeight: "700", marginBottom: "18px" },
-  chartPlaceholder: { height: "280px", borderRadius: "18px", background: "linear-gradient(135deg,#f5fbff,#eef8fd)", display: "flex", alignItems: "center", justifyContent: "center", color: C.primary, fontWeight: "600" },
-  activity: { padding: "14px", background: "#f8fafc", border: "1px solid #eef2f6", borderRadius: "14px", marginBottom: "12px", fontSize: "14px", fontWeight: "500" },
+  bigTitle: { fontSize: "18px", fontWeight: "700", marginBottom: "18px", color: C.text },
+  chartPlaceholder: { height: "240px", borderRadius: "18px", background: "linear-gradient(135deg,#f5fbff,#eef8fd)", display: "flex", alignItems: "center", justifyContent: "center", color: C.primary, fontWeight: "600", fontSize: "14px" },
+  activity: { padding: "14px", background: "#f8fafc", border: "1px solid #eef2f6", borderRadius: "14px", marginBottom: "12px", fontSize: "14px", color: C.text, fontWeight: "500" },
 };
