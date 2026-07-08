@@ -201,17 +201,41 @@ exports.getAllLeaveTypes = async (req, res) => {
 };
 
 exports.getEmployeeById = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const [employee] = await db.query('SELECT * FROM employee WHERE EmployeeID = ?', [id]);
-        if (employee.length === 0) {
-            return res.status(404).json({ message: "Employee not found" });
-        }
-        res.status(200).json(employee[0]);
-    } catch (error) {
-        console.error("Error fetching single employee:", error);
-        res.status(500).json({ message: "Failed to fetch employee", error: error.message });
+  try {
+    const { id } = req.params;
+    // 1. Fetch Profile Data with joined department structural metadata
+    const [employeeRows] = await db.query(`
+      SELECT e.*, d.Department as department_name 
+      FROM employee e
+      LEFT JOIN Department d ON e.Department = d.id
+      WHERE e.EmployeeID = ?
+    `, [id]);
+
+    if (!employeeRows || employeeRows.length === 0) {
+      return res.status(404).json({ message: "Employee profile record not found." });
     }
+
+    const employeeData = employeeRows[0];
+
+    // 2. Fetch linked structural items from employee_education_details
+    const [educationRows] = await db.query(
+      'SELECT * FROM employee_education_details WHERE emp_id = ? ORDER BY id DESC',
+      [id]
+    );
+
+    // 3. Respond with an integrated data structure
+    return res.status(200).json({
+      ...employeeData,
+      education: educationRows || []
+    });
+
+  } catch (error) {
+    console.error("Error fetching single employee dataset:", error);
+    return res.status(500).json({ 
+      message: "Failed to fetch unified employee metrics profiles.", 
+      error: error.message 
+    });
+  }
 };
 
 exports.getEmployeeStatus = async (req, res) => {
@@ -236,12 +260,24 @@ exports.getAnnouncements = async (req, res) => {
 
 exports.getAllSupervisors = async (req, res) => {
     try {
-        const query = `SELECT * FROM employee WHERE role IN ('manager') ORDER BY EmployeeID DESC`;
+        const query = `
+            SELECT *
+            FROM employee
+            WHERE LOWER(role) IN ('manager','supervisor')
+              AND ArchiveStatus = '0'
+              AND Status = 'Active'
+            ORDER BY FirstName ASC
+        `;
+
         const [rows] = await db.query(query);
+
         res.status(200).json(rows);
+
     } catch (error) {
-        console.error("Error fetching supervisors API:", error.message);
-        res.status(500).json({ message: "Failed to fetch supervisors", error: error.message });
+        console.error(error);
+        res.status(500).json({
+            message: "Failed to fetch supervisors"
+        });
     }
 };
 
@@ -530,36 +566,118 @@ exports.createProject = async (req, res) => {
 //               UPDATE CALLS
 // ==========================================
 
+// exports.updateEmployee = async (req, res) => {
+//     try {
+//         console.log("Update employee API invoked with payload:", req.body);
+//         const { id } = req.params;
+//         const employeeData = req.body;
+//         console.log(employeeData)
+//         // If a file is uploaded, attach its filename to employeeData
+//         if (req.file) {
+//             employeeData.Photo = req.file.filename;
+//         }
+
+//         // Clean up un-updatable keys 
+//         delete employeeData.EmployeeID;
+//         delete employeeData.CreatedDate;
+//         delete employeeData.CreatedBy;
+        
+//         // If no file was sent, and the frontend sent an empty photo field,
+//         // we check if it's meant to clear it or if we should skip updating it
+//         if (!req.file && (employeeData.Photo === undefined || employeeData.Photo === '')) {
+//              delete employeeData.Photo; 
+//         }
+
+//         const today = new Date().toISOString().split('T')[0];
+//         employeeData.ModifiedDate = today;
+
+//         if (employeeData.Password) {
+//             employeeData.Password = md5(employeeData.Password);
+//         } else {
+//              delete employeeData.Password;
+//         }
+
+//         const columns = Object.keys(employeeData);
+//         const values = Object.values(employeeData);
+        
+//         if (columns.length === 0) {
+//             return res.status(400).json({ message: "No data provided to update" });
+//         }
+
+//         const setClause = columns.map(col => `${col} = ?`).join(', ');
+//         const query = `UPDATE employee SET ${setClause} WHERE EmployeeID = ?`;
+//         values.push(id);
+
+//         const [result] = await db.query(query, values);
+
+//         if (result.affectedRows === 0) {
+//             return res.status(404).json({ message: "Employee not found" });
+//         }
+
+//         res.status(200).json({ message: "Employee updated successfully" });
+//     } catch (error) {
+//         console.error("Error updating employee:", error);
+//         res.status(500).json({ message: "Failed to update employee", error: error.message });
+//     }
+// };
+
 exports.updateEmployee = async (req, res) => {
     try {
+        console.log("Update employee API invoked with payload:", req.body);
         const { id } = req.params;
         const employeeData = req.body;
 
+        // If a file is uploaded, attach its filename to employeeData
         if (req.file) {
             employeeData.Photo = req.file.filename;
         }
 
-        delete employeeData.EmployeeID;
-        delete employeeData.CreatedDate;
-        delete employeeData.CreatedBy;
+        // 1. STRIP UN-UPDATABLE & JOINED VIRTUAL FIELDS (Fixes the crash)
+        const fieldsToIgnore = [
+            'EmployeeID',
+            'CreatedDate',
+            'CreatedBy',
+            'department_name', // Remove virtual joined columns from getEmployeeById
+            'education'        // Remove the nested array from getEmployeeById
+        ];
         
-        if (!req.file && employeeData.Photo !== undefined) {
+        fieldsToIgnore.forEach(field => {
+            delete employeeData[field];
+        });
+        
+        // If no file was sent, and the frontend sent an empty photo field,
+        // check if it's meant to clear it or if we should skip updating it
+        if (!req.file && (employeeData.Photo === undefined || employeeData.Photo === '')) {
              delete employeeData.Photo; 
         }
 
         const today = new Date().toISOString().split('T')[0];
         employeeData.ModifiedDate = today;
 
-        if (employeeData.Password) {
+        // ─── UPDATED PASSWORD CHECK BLOCK ───
+        // Only hash and update the password if it's provided, not empty, and not placeholder text
+        if (
+            employeeData.Password && 
+            employeeData.Password.trim() !== "" && 
+            employeeData.Password !== "undefined" && 
+            employeeData.Password !== "null"
+        ) {
             employeeData.Password = md5(employeeData.Password);
         } else {
-             delete employeeData.Password;
+            // Completely remove Password from the dataset so it is omitted from the SQL UPDATE query
+            delete employeeData.Password;
         }
+        // ────────────────────────────────────
 
+        // 2. Build safe update query using remaining real columns
         const columns = Object.keys(employeeData);
         const values = Object.values(employeeData);
-        const setClause = columns.map(col => `${col} = ?`).join(', ');
         
+        if (columns.length === 0) {
+            return res.status(400).json({ message: "No data provided to update" });
+        }
+
+        const setClause = columns.map(col => `${col} = ?`).join(', ');
         const query = `UPDATE employee SET ${setClause} WHERE EmployeeID = ?`;
         values.push(id);
 

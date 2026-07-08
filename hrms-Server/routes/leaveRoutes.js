@@ -1,14 +1,15 @@
-const express    = require("express");
-const router     = express.Router();
-const multer     = require("multer");
-const path       = require("path");
+const express = require("express");
+const router = express.Router();
+const multer = require("multer");
+const path = require("path");
 const verifyToken = require("../middlewares/authMiddleware");
+const checkRole = require("../middlewares/roleMiddleware");
 const leaveController = require("../controllers/leaveController");
 
 // ─── File upload (doctor prescription) ───────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, "uploads/leave-docs"),
-  filename:    (req, file, cb) =>
+  filename: (req, file, cb) =>
     cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + path.extname(file.originalname)),
 });
 const upload = multer({ storage });
@@ -18,19 +19,30 @@ router.get("/balance", verifyToken, leaveController.getBalance);
 router.get("/my-requests", verifyToken, leaveController.getMyRequests);
 router.post("/apply", verifyToken, upload.single("attachment"), leaveController.applyLeave);
 
-// ─── Manager routes ──────────────────────────────────────────────────────────
-router.get("/pending-approvals", verifyToken, leaveController.getPendingApprovals);  
-
-// ─── HR / Admin routes ────────────────────────────────────────────────────────
-router.get("/all-requests", verifyToken, leaveController.getAllRequests);            
-
-// ─── Calendar & Holidays ──────────────────────────────────────────────────────
-router.get("/calendar", verifyToken, leaveController.getLeaveCalendar);
-router.get("/holiday-submissions", verifyToken, leaveController.getHolidaySubmissions);
-router.post("/submit-holidays", verifyToken, leaveController.submitFlexiHolidays);
+// ─── Pending Approvals (Manager/HR/Admin) ────────────────────────────────────
+router.get("/pending-approvals", verifyToken, leaveController.getPendingApprovals);
 
 // ─── Approve / Reject ─────────────────────────────────────────────────────────
-router.post("/:id/approve", verifyToken, leaveController.approveLeave);            
-router.post("/:id/reject", verifyToken, leaveController.rejectLeave);             
+router.put("/:id/approve", verifyToken, leaveController.approveLeave);
+router.put("/:id/reject", verifyToken, leaveController.rejectLeave);
+
+// ─── Employee Leave Details (Manager/HR/Admin) ──────────────────────────────
+router.get("/employee/:employeeId/details", verifyToken, leaveController.getEmployeeLeaveDetails);
+
+// ─── Fixed Holidays (Admin only) ─────────────────────────────────────────────
+router.get("/holidays/fixed", verifyToken, leaveController.getFixedHolidays);
+router.post("/holidays/fixed", verifyToken, checkRole(['admin']), leaveController.createFixedHoliday);
+router.delete("/holidays/fixed/:id", verifyToken, checkRole(['admin']), leaveController.deleteFixedHoliday);
+
+// ─── Flexi Holidays ───────────────────────────────────────────────────────────
+router.get("/holidays/flexi/active", verifyToken, leaveController.getActiveFlexiHolidays);
+router.get("/holidays/flexi/all", verifyToken, checkRole(['admin', 'hr']), leaveController.getAllFlexiHolidays);
+router.post("/holidays/flexi", verifyToken, checkRole(['admin']), leaveController.createFlexiHoliday);
+router.put("/holidays/flexi/:id", verifyToken, checkRole(['admin']), leaveController.updateFlexiHolidayStatus);
+router.delete("/holidays/flexi/:id", verifyToken, checkRole(['admin']), leaveController.deleteFlexiHoliday);
+
+// ─── Leave Policy (Admin only) ───────────────────────────────────────────────
+router.get("/leave-policy", verifyToken, leaveController.getLeavePolicy);
+router.put("/leave-policy", verifyToken, checkRole(['admin']), leaveController.updateLeavePolicy);
 
 module.exports = router;

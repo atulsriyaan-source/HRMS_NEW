@@ -33,6 +33,8 @@ const LeaderLayout = () => {
   // View-Only executive menu items
   const menuItems = [
     { label: 'Executive Dashboard', path: '/leader/dashboard', icon: '📈' },
+    { label: 'Candidates', path: '/leader/Recruitment/candidates', icon: '🧑‍💼' },
+    { label: 'Interview Pipeline', path: '/leader/Recruitment/interviews', icon: '🎯' },
     { label: 'Timesheet Oversight', path: '/leader/timesheet', icon: '📋' },
     { label: 'Team Leaves', path: '/leader/leaves', icon: '📅' },
     { label: 'My Profile', path: '/leader/profile', icon: '👩‍💼' },

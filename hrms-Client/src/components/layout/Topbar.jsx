@@ -7,8 +7,11 @@ export default function Topbar() {
     name: "Loading...",
     role: "User",
     initial: "U",
-    photo: null, // NEW: State to hold the profile photo filename
+    photo: null, // Holds the profile photo filename
   });
+
+  // Reusable fallback profile placeholder image asset url
+  const defaultProfileUrl = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
   useEffect(() => {
     // 1. Grab the user data we saved in localStorage during login
@@ -25,7 +28,7 @@ export default function Topbar() {
         initial: parsedUser.name ? parsedUser.name.charAt(0).toUpperCase() : "U",
       }));
 
-      // 3. NEW: Fetch their latest profile photo from the backend using their ID
+      // 3. Fetch their latest profile photo from the backend using their ID
       if (parsedUser.id) {
         fetch(`http://localhost:5000/api/admin/employees/${parsedUser.id}`)
           .then(res => res.ok ? res.json() : null)
@@ -42,13 +45,13 @@ export default function Topbar() {
   return (
     <header style={styles.topbar}>
       <div style={styles.left}>
-        <div style={styles.searchBox}>
+        {/* <div style={styles.searchBox}>
           <FiSearch size={18} />
           <input
             placeholder="Search employees, departments, payroll..."
             style={styles.input}
           />
-        </div>
+        </div> */}
       </div>
 
       <div style={styles.right}>
@@ -63,16 +66,16 @@ export default function Topbar() {
 
         <div style={styles.profile}>
           
-          {/* UPDATED: Dynamic Avatar - Shows Image if it exists, otherwise falls back to Initial */}
-          {userData.photo ? (
-            <img 
-              src={`http://localhost:5000/uploads/${userData.photo}`} 
-              alt="Profile" 
-              style={{ ...styles.avatar, objectFit: "cover" }} 
-            />
-          ) : (
-            <div style={styles.avatar}>{userData.initial}</div>
-          )}
+          {/* UPDATED: Displays backend image if present, else seamlessly uses default silhouette fallback */}
+          <img 
+            src={userData.photo ? `http://localhost:5000/uploads/${userData.photo}` : defaultProfileUrl} 
+            alt="Profile" 
+            style={{ ...styles.avatar, objectFit: "cover" }} 
+            onError={(e) => {
+              e.target.onerror = null; 
+              e.target.src = defaultProfileUrl;
+            }}
+          />
 
           <div>
             {/* Dynamic Name and Role */}
@@ -85,7 +88,6 @@ export default function Topbar() {
   );
 }
 
-// Your existing styles remain completely unchanged!
 const styles = {
   topbar: {
     height: "90px",

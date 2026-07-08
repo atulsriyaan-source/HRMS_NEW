@@ -122,6 +122,8 @@ function App() {
           <Route path="leaves" element={<EmployeeLeaves />} />
           <Route path="announcements" element={<Announcements />} />
           <Route path="announcements/:id" element={<Announcements />} />
+          <Route path="Recruitment/candidates" element={<Candidates />} />
+          <Route path="Recruitment/interviews" element={<InterviewPipeline />} />
         </Route>
 
         <Route 
@@ -133,6 +135,8 @@ function App() {
           }
         >
           <Route path="timesheet" element={<LeaderTimesheet />} />
+          <Route path="Recruitment/candidates" element={<Candidates />} />
+          <Route path="Recruitment/interviews" element={<InterviewPipeline />} />
         </Route>
 
       </Routes>

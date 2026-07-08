@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+// ApplyLeaveTab.jsx
+import React, { useState, useMemo, useEffect } from "react";
 import { C, RADIUS } from "../../theme";
 
 const ALL_LEAVE_TYPES = [
@@ -8,15 +9,6 @@ const ALL_LEAVE_TYPES = [
   { value: "Flexi",     label: "Flexi Holiday",       color: "#633806", total: 2   },
   { value: "LWP",       label: "Leave Without Pay",   color: "#5f5e5a", total: null},
   { value: "Maternity", label: "Maternity Leave",     color: "#72243e", total: 180 },
-];
-
-const FLEXI_OPTIONS = [
-  "26 Jan 2026 — Republic Day",
-  "25 Mar 2026 — Holi",
-  "10 Apr 2026 — Good Friday",
-  "14 Apr 2026 — Ambedkar Jayanti",
-  "07 Nov 2026 — Guru Nanak Jayanti",
-  "25 Dec 2026 — Christmas",
 ];
 
 function daysBetween(from, to) {
@@ -59,8 +51,8 @@ function InfoBox({ type = "info", children }) {
 }
 
 function ApprovalWorkflow({ days, leaveType }) {
-  const goesHR = days > 3 || ["Maternity", "LWP"].includes(leaveType);
-  const steps  = goesHR ? ["You", "HR"] : ["You", "Manager"];
+  const needsHR = days > 3 || ["Maternity", "LWP"].includes(leaveType);
+  const steps = needsHR ? ["You", "HR/Admin"] : ["You", "Manager"];
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: "8px",
@@ -83,9 +75,14 @@ function ApprovalWorkflow({ days, leaveType }) {
           {i < steps.length - 1 && <span style={{ color: C.muted }}>→</span>}
         </React.Fragment>
       ))}
-      {goesHR && (
+      {leaveType === "Flexi" && (
+        <span style={{ fontSize: "12px", color: "#065f46", marginLeft: "4px", fontWeight: "600" }}>
+          (Auto-approved)
+        </span>
+      )}
+      {needsHR && leaveType !== "Flexi" && (
         <span style={{ fontSize: "12px", color: "#92400e", marginLeft: "4px" }}>
-          (forwarded directly to HR)
+          (requires HR/Admin approval)
         </span>
       )}
     </div>
@@ -97,31 +94,51 @@ const ErrMsg   = ({ children }) => (
   <span style={{ fontSize: "12px", color: "#dc2626", marginTop: "2px" }}>{children}</span>
 );
 
-/**
- * Props:
- *   onSubmit  — (form) => void
- *   gender    — "male" | "female"
- *   balances  — { Casual, Sick, Earned, Flexi, Maternity? } — integer values from backend
- */
 export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
   const isFemale = gender?.toLowerCase() === "female";
+  const token = localStorage.getItem("token");
 
-  // Build the list of available leave types for this employee,
-  // disabling types with 0 balance (except LWP and Maternity which have no cap)
+  const [flexiHolidays, setFlexiHolidays] = useState([]);
+  const [loadingFlexi, setLoadingFlexi] = useState(false);
+
+  useEffect(() => {
+    fetchFlexiHolidays();
+  }, []);
+
+  // In ApplyLeaveTab.jsx, update the fetchFlexiHolidays function:
+
+const fetchFlexiHolidays = async () => {
+  try {
+    setLoadingFlexi(true);
+    const res = await fetch('/api/holidays/flexi/active', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    
+    if (!res.ok) {
+      console.error("Flexi holidays API error:", res.status);
+      setFlexiHolidays([]);
+      return;
+    }
+    
+    const data = await res.json();
+    setFlexiHolidays(Array.isArray(data) ? data : []);
+  } catch (err) {
+    console.error("Error fetching flexi holidays:", err);
+    setFlexiHolidays([]);
+  } finally {
+    setLoadingFlexi(false);
+  }
+};
+
   const leaveTypes = useMemo(() => {
     return ALL_LEAVE_TYPES
       .filter(lt => {
         if (lt.value === "Maternity") return isFemale;
-        return true; // show all others
+        return true;
       })
       .map(lt => {
-        const bal = Math.floor(Number(balances[lt.value] ?? 0));
-        // Disable if balance is 0 and it's a limited-leave type
-        const disabled =
-          lt.total !== null &&
-          lt.value !== "LWP" &&
-          lt.value !== "Maternity" &&
-          bal <= 0;
+        const bal = Number(balances[lt.value] ?? 0);
+        const disabled = lt.total !== null && lt.value !== "LWP" && lt.value !== "Maternity" && bal <= 0;
         return { ...lt, balance: bal, disabled };
       });
   }, [isFemale, balances]);
@@ -140,9 +157,14 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
     setErrors(p => ({ ...p, [k]: undefined }));
   };
 
-  const days       = form.halfDay !== "Full" ? 0.5 : daysBetween(form.fromDate, form.toDate);
+  const calculateDays = () => {
+    if (form.halfDay !== "Full") return 0.5;
+    return daysBetween(form.fromDate, form.toDate);
+  };
+
+  const days = calculateDays();
   const isSickLong = form.leaveType === "Sick" && days > 2;
-  const needsDoc   = isSickLong;
+  const needsDoc = isSickLong;
 
   const validate = () => {
     const e = {};
@@ -152,17 +174,23 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
     if (form.fromDate && form.toDate && new Date(form.toDate) < new Date(form.fromDate))
                           e.toDate    = "Must be after from date";
     if (!form.reason.trim()) e.reason = "Reason is required";
-    if (form.leaveType === "Flexi" && !form.flexiSelected)
-                          e.flexiSelected = "Select a flexi holiday";
+    if (form.leaveType === "Flexi") {
+      if (!form.flexiSelected) {
+        e.flexiSelected = "Select a flexi holiday";
+      }
+      if (form.fromDate && form.toDate && form.fromDate !== form.toDate) {
+        e.toDate = "Flexi holiday must be a single day";
+      }
+    }
     if (needsDoc && !form.attachment)
-                          e.attachment = "Doctor's prescription required";
+      e.attachment = "Doctor's prescription required";
 
-    // Balance check
     if (form.leaveType && days > 0) {
       const lt = leaveTypes.find(l => l.value === form.leaveType);
       if (lt && lt.total !== null && lt.value !== "Maternity") {
-        if (Math.floor(Number(balances[form.leaveType] || 0)) < days) {
-          e.leaveType = `Insufficient balance. Available: ${Math.floor(Number(balances[form.leaveType] || 0))} days`;
+        const bal = Number(balances[form.leaveType] || 0);
+        if (bal < days) {
+          e.leaveType = `Insufficient balance. Available: ${bal} days`;
         }
       }
     }
@@ -174,7 +202,16 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
     e.preventDefault();
     const errs = validate();
     if (Object.keys(errs).length) { setErrors(errs); return; }
-    onSubmit(form);
+    
+    const submitData = { ...form };
+    if (form.leaveType === "Flexi" && form.flexiSelected) {
+      const selectedHoliday = flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected);
+      if (selectedHoliday) {
+        submitData.fromDate = selectedHoliday.HolidayDate;
+        submitData.toDate = selectedHoliday.HolidayDate;
+      }
+    }
+    onSubmit(submitData);
   };
 
   const selectedType = leaveTypes.find(l => l.value === form.leaveType);
@@ -205,37 +242,90 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
         {errors.leaveType && <ErrMsg>{errors.leaveType}</ErrMsg>}
       </div>
 
+      {/* Flexi holiday dropdown */}
+      {form.leaveType === "Flexi" && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={s.label}>Select Flexi Holiday <Required /></label>
+          {loadingFlexi ? (
+            <div style={{ padding: "10px", color: C.muted }}>Loading flexi holidays...</div>
+          ) : flexiHolidays.length === 0 ? (
+            <div style={{ padding: "10px", color: "#92400e", background: "#fffbeb", borderRadius: RADIUS.input }}>
+              No active flexi holidays available. Please contact HR.
+            </div>
+          ) : (
+            <select
+              style={{ ...s.input, borderColor: errors.flexiSelected ? "#dc2626" : undefined }}
+              value={form.flexiSelected}
+              onChange={e => set("flexiSelected", e.target.value)}
+            >
+              <option value="">Select a flexi holiday…</option>
+              {flexiHolidays.map(h => (
+                <option key={h.FlexiHolidayID} value={h.FlexiHolidayID}>
+                  {h.HolidayName} ({new Date(h.HolidayDate).toLocaleDateString()})
+                </option>
+              ))}
+            </select>
+          )}
+          {errors.flexiSelected && <ErrMsg>{errors.flexiSelected}</ErrMsg>}
+          <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
+            Flexi holidays are single-day leaves and are auto-approved.
+          </div>
+        </div>
+      )}
+
       {/* Dates + half day */}
-      <div style={s.grid3}>
-        <div style={s.field}>
-          <label style={s.label}>From Date <Required /></label>
-          <input
-            type="date"
-            style={{ ...s.input, borderColor: errors.fromDate ? "#dc2626" : undefined }}
-            value={form.fromDate}
-            onChange={e => set("fromDate", e.target.value)}
-          />
-          {errors.fromDate && <ErrMsg>{errors.fromDate}</ErrMsg>}
+      {form.leaveType !== "Flexi" && (
+        <div style={s.grid3}>
+          <div style={s.field}>
+            <label style={s.label}>From Date <Required /></label>
+            <input
+              type="date"
+              style={{ ...s.input, borderColor: errors.fromDate ? "#dc2626" : undefined }}
+              value={form.fromDate}
+              onChange={e => set("fromDate", e.target.value)}
+            />
+            {errors.fromDate && <ErrMsg>{errors.fromDate}</ErrMsg>}
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>To Date <Required /></label>
+            <input
+              type="date"
+              style={{ ...s.input, borderColor: errors.toDate ? "#dc2626" : undefined }}
+              value={form.toDate}
+              onChange={e => set("toDate", e.target.value)}
+            />
+            {errors.toDate && <ErrMsg>{errors.toDate}</ErrMsg>}
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Day Type</label>
+            <select style={s.input} value={form.halfDay} onChange={e => set("halfDay", e.target.value)}>
+              <option value="Full">Full Day</option>
+              <option value="First">First Half</option>
+              <option value="Second">Second Half</option>
+            </select>
+          </div>
         </div>
-        <div style={s.field}>
-          <label style={s.label}>To Date <Required /></label>
-          <input
-            type="date"
-            style={{ ...s.input, borderColor: errors.toDate ? "#dc2626" : undefined }}
-            value={form.toDate}
-            onChange={e => set("toDate", e.target.value)}
-          />
-          {errors.toDate && <ErrMsg>{errors.toDate}</ErrMsg>}
+      )}
+
+      {/* For Flexi, show selected date info */}
+      {form.leaveType === "Flexi" && form.flexiSelected && (
+        <div style={{ ...s.field, marginBottom: "16px" }}>
+          <label style={s.label}>Selected Date</label>
+          <div style={{
+            padding: "10px 14px",
+            background: C.inputBg,
+            borderRadius: RADIUS.input,
+            border: `1px solid ${C.borderLight}`,
+            fontSize: "14px",
+            color: C.text
+          }}>
+            {flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected)?.HolidayName || "Selected"} 
+            - {flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected)?.HolidayDate 
+               ? new Date(flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected).HolidayDate).toLocaleDateString() 
+               : ""}
+          </div>
         </div>
-        <div style={s.field}>
-          <label style={s.label}>Day Type</label>
-          <select style={s.input} value={form.halfDay} onChange={e => set("halfDay", e.target.value)}>
-            <option value="Full">Full Day</option>
-            <option value="First">First Half</option>
-            <option value="Second">Second Half</option>
-          </select>
-        </div>
-      </div>
+      )}
 
       {/* Summary + approval path */}
       {days > 0 && form.leaveType && (
@@ -244,7 +334,7 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
             <strong>{days} day{days !== 1 ? "s" : ""}</strong> — {selectedType?.label || form.leaveType}
             {selectedType?.total !== null && selectedType?.value !== "Maternity" && (
               <span style={{ marginLeft: "8px", opacity: 0.8 }}>
-                (Balance after: {Math.max(0, Math.floor(Number(balances[form.leaveType] || 0)) - days)} days)
+                (Balance after: {Math.max(0, Number(balances[form.leaveType] || 0) - days)} days)
               </span>
             )}
           </InfoBox>
@@ -267,36 +357,6 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
         <InfoBox type="warn">
           Leave Without Pay is only approved when all other leave balances are exhausted.
         </InfoBox>
-      )}
-
-      {/* Flexi holiday picker */}
-      {form.leaveType === "Flexi" && (
-        <div style={{ marginBottom: "20px" }}>
-          <SectionLabel>Select Flexi Holiday</SectionLabel>
-          {errors.flexiSelected && <ErrMsg>{errors.flexiSelected}</ErrMsg>}
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
-            {FLEXI_OPTIONS.map(opt => (
-              <label key={opt} style={{
-                display: "flex", alignItems: "center", gap: "12px",
-                fontSize: "13px", cursor: "pointer", padding: "10px 14px",
-                border: `1.5px solid ${form.flexiSelected === opt ? C.primary : C.borderLight}`,
-                borderRadius: RADIUS.input,
-                background: form.flexiSelected === opt ? C.inputBg : C.card,
-              }}>
-                <input
-                  type="radio" name="flexi" value={opt}
-                  checked={form.flexiSelected === opt}
-                  onChange={() => set("flexiSelected", opt)}
-                  style={{ flexShrink: 0, width: "16px", height: "16px" }}
-                />
-                <span style={{ flex: 1 }}>{opt}</span>
-                {form.flexiSelected === opt && (
-                  <span style={{ color: C.primary, fontWeight: "600", fontSize: "12px" }}>✓ Selected</span>
-                )}
-              </label>
-            ))}
-          </div>
-        </div>
       )}
 
       {/* Emergency contact */}
@@ -332,7 +392,7 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
         {errors.reason && <ErrMsg>{errors.reason}</ErrMsg>}
       </div>
 
-      {/* Doctor prescription — only for sick >2 days */}
+      {/* Doctor prescription */}
       {needsDoc && (
         <div style={{ ...s.field, marginBottom: "20px" }}>
           <label style={s.label}>Doctor's Prescription <Required /></label>

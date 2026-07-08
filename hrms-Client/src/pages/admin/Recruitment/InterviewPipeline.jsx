@@ -2,6 +2,12 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { C, RADIUS } from "../../../theme";
 import { apiUrl } from "../../../URL";
 
+// NOTE: adjust this if your backend exposes the employee master list under a
+// different path — this mirrors the "/api/admin/departments" pattern already
+// used in Candidates.jsx, assuming an analogous "/api/employees/all" route.
+const EMPLOYEES_ENDPOINT = "/api/admin/employees";
+const DEPARTMENTS_ENDPOINT = "/api/admin/departments";
+
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 const STAGES = [
@@ -24,31 +30,42 @@ const STATUS_STYLE = {
   "On Hold":               { bg: "#f5f5f5", color: "#616161" },
 };
 
+// ─── Rating Levels ─────────────────────────────────────────────────────────────
+
+const RATING_LEVELS = [
+  { value: 1, label: "Beginner" },
+  { value: 2, label: "Intermediate" },
+  { value: 3, label: "Proficient" },
+  { value: 4, label: "Expert" },
+];
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 const initials = (c) =>
   `${c.FirstName?.[0] ?? ""}${c.LastName?.[0] ?? ""}`.toUpperCase();
 
-/**
- * What stage column should this candidate appear in?
- */
 const getKanbanStage = (c) => {
   const status = c.CandidateStatus;
   const round  = c.CurrentRoundName;
 
   if (status === "Applied") return "Applied";
-  // Waiting for first interview (shortlisted but not yet scheduled)
   if ((status === "Interview Scheduled" || status === "On Hold") && !round) return "Applied";
   if (round === "Offer Discussion" || status === "Offer Discussion") return "Offer Discussion";
   if (round === "Offer Process"    || status === "Offer Process")    return "Offer Process";
   if (round && STAGES.includes(round)) return round;
+  
+  // If no round but status is "Interview Scheduled" (after Offer Discussion Pass),
+  // and we have a Pass result, check if next round is pending
+  if (c.EvaluationResult === "Pass" && c.NextRoundPending) {
+    // Still show in current round's column
+    if (c.CurrentRoundName && STAGES.includes(c.CurrentRoundName)) {
+      return c.CurrentRoundName;
+    }
+  }
+  
   return "Applied";
 };
 
-/**
- * Derive the next round name from the current one.
- * Used to label the Schedule button.
- */
 const getNextRoundName = (currentRoundName) => {
   switch (currentRoundName) {
     case null: case undefined: case "": return "Domain Interview";
@@ -59,76 +76,112 @@ const getNextRoundName = (currentRoundName) => {
   }
 };
 
-/**
- * Card action logic — the single source of truth for which buttons appear.
- *
- * The backend now sends:
- *   c.CurrentRoundName  – name of the latest (active) round
- *   c.EvaluationResult  – "Pass" | "Fail" | "Hold" | null  (for the active round)
- *   c.NextRoundPending  – true when passed + next round not yet scheduled
- *
- * Flow:
- *   Applied                                → "Review Resume"
- *   Interview Scheduled, no round          → "Schedule Domain Interview"
- *   Active round, result = null            → "Evaluate <Round>"
- *   Active round, result = Hold            → "Re-evaluate <Round>"
- *   Active round, result = Pass            → "Schedule <Next Round>"   (NextRoundPending)
- *   Active round, result = Fail            → nothing (archived)
- *   Offer Process, result = null or Hold   → "Review Checklist"
- */
-const getCardActions = (c) => {
+const getCardActions = (c, userRole, userEmployeeId) => {
   const status       = c.CandidateStatus;
   const round        = c.CurrentRoundName;
-  const evalResult   = c.EvaluationResult; // from backend
-  const nextPending  = c.NextRoundPending; // from backend
+  const evalResult   = c.EvaluationResult;
+  const nextPending  = c.NextRoundPending;
+  
+  const isHr = userRole === "hr" || userRole === "admin";
+  const isManager = userRole === "manager";
+  const isLead = userRole === "lead";
+  
+  // ── Lead: Read-only ──────────────────────────────────────────────────────
+  if (isLead) {
+    return { evaluate: null, schedule: null };
+  }
 
-  // ── Applied / not yet scheduled ──────────────────────────────────────────
+  // ── Applied / Resume Screening ──────────────────────────────────────────
   if (status === "Applied") {
-    return { evaluate: "Review Resume", schedule: null };
+    if (isHr) {
+      return { evaluate: "Review Resume", schedule: null };
+    }
+    return { evaluate: null, schedule: null };
   }
 
   // Shortlisted but no round created yet
   if (!round) {
-    return { evaluate: null, schedule: "Schedule Domain Interview" };
+    if (isHr) {
+      return { evaluate: null, schedule: "Schedule Domain Interview" };
+    }
+    return { evaluate: null, schedule: null };
   }
 
   // ── Offer Process ─────────────────────────────────────────────────────────
   if (round === "Offer Process") {
-    return { evaluate: "Review Checklist", schedule: null };
+    if (isHr) {
+      return { evaluate: "Review Checklist", schedule: null };
+    }
+    return { evaluate: null, schedule: null };
   }
 
-  // ── Standard interview rounds ─────────────────────────────────────────────
+  // ── Offer Discussion ─────────────────────────────────────────────────────
+  if (round === "Offer Discussion") {
+    // Check if already passed and next round pending
+    if ((evalResult === "Pass" || nextPending) && isHr) {
+      return { evaluate: null, schedule: "Start Offer Process" };
+    }
+    // Not yet evaluated or on hold
+    if (isHr) {
+      return { evaluate: "Save Discussion", schedule: null };
+    }
+    return { evaluate: null, schedule: null };
+  }
+
+  // ── Standard interview rounds (Domain/Management) ──────────────────────
   const roundShort =
     round === "Domain Interview"     ? "Domain"
     : round === "Management Interview" ? "Management"
-    : round === "Offer Discussion"     ? "Discussion"
     : round;
 
-  // Passed → show schedule button for next round
+  const isAssignedManager =
+    isManager &&
+    String(c.AssignedInterviewerId) === String(userEmployeeId);
+
+  // Passed → show schedule button for next round (only HR)
   if (evalResult === "Pass" || nextPending) {
-    const nextRound = getNextRoundName(round);
-    if (!nextRound) return { evaluate: null, schedule: null };
-    const scheduleLabel =
-      nextRound === "Management Interview" ? "Schedule Management"
-      : nextRound === "Offer Discussion"   ? "Schedule Offer Discussion"
-      : nextRound === "Offer Process"      ? "Start Offer Process"
-      : `Schedule ${nextRound}`;
-    return { evaluate: null, schedule: scheduleLabel };
+    if (isHr) {
+      const nextRound = getNextRoundName(round);
+      if (!nextRound) return { evaluate: null, schedule: null };
+      const scheduleLabel =
+        nextRound === "Management Interview" ? "Schedule Management"
+        : nextRound === "Offer Discussion"   ? "Schedule Offer Discussion"
+        : nextRound === "Offer Process"      ? "Start Offer Process"
+        : `Schedule ${nextRound}`;
+      return { evaluate: null, schedule: scheduleLabel };
+    }
+    return { evaluate: null, schedule: null };
   }
 
   // On Hold → Re-evaluate
   if (evalResult === "Hold") {
-    return { evaluate: `Evaluate ${roundShort}`, schedule: null };
+    if (isAssignedManager) {
+      return { evaluate: `Evaluate ${roundShort}`, schedule: null };
+    }
+    if (isHr) {
+      return { evaluate: null, schedule: null, waitingOnManager: true };
+    }
+    return { evaluate: null, schedule: null };
   }
 
   // Not yet evaluated (null) → Evaluate
-  const evaluateLabel =
-    round === "Domain Interview"     ? "Evaluate Domain"
-    : round === "Management Interview" ? "Evaluate Management"
-    : round === "Offer Discussion"     ? "Save Discussion"
-    : `Evaluate ${roundShort}`;
+  if (evalResult === null || evalResult === undefined) {
+    const evaluateLabel =
+      round === "Domain Interview"     ? "Evaluate Domain"
+      : round === "Management Interview" ? "Evaluate Management"
+      : `Evaluate ${roundShort}`;
 
-  return { evaluate: evaluateLabel, schedule: null };
+    if (isAssignedManager) {
+      return { evaluate: evaluateLabel, schedule: null };
+    }
+    if (isHr) {
+      return { evaluate: null, schedule: null, waitingOnManager: true };
+    }
+    return { evaluate: null, schedule: null };
+  }
+
+  // Failed - no actions
+  return { evaluate: null, schedule: null };
 };
 
 // ─── Subcomponents ─────────────────────────────────────────────────────────────
@@ -156,11 +209,13 @@ const SectionLabel = ({ children }) => (
   <div style={s.sectionLabel}>{children}</div>
 );
 
-const ScoreSelect = ({ field, value, onChange }) => (
-  <select value={value || ""} onChange={(e) => onChange(field, e.target.value)} style={s.select}>
-    <option value="">Select score</option>
-    {[1,2,3,4,5,6,7,8,9,10].map((v) => (
-      <option key={v} value={v}>{v}/10</option>
+const RatingSelect = ({ field, value, onChange }) => (
+  <select value={value || ""} onChange={(e) => onChange(field, Number(e.target.value))} style={s.select}>
+    <option value="">Select rating</option>
+    {RATING_LEVELS.map((level) => (
+      <option key={level.value} value={level.value}>
+        {level.value} – {level.label}
+      </option>
     ))}
   </select>
 );
@@ -177,21 +232,41 @@ export default function InterviewPipeline() {
   const [scheduleForm, setScheduleForm]     = useState({
     RoundName: "Domain Interview",
     InterviewDate: "", InterviewTime: "",
-    InterviewMode: "Online", InterviewerName: "",
+    InterviewMode: "Online",
+    InterviewerId: "", InterviewerName: "",
     InterviewerDesignation: "", Department: "",
     MeetingLink: "", Location: "",
+    AdditionalInterviewers: [],
   });
+  const [departments, setDepartments] = useState([]);
+  const [managers, setManagers]       = useState([]);
   const [offerTasks, setOfferTasks] = useState({
     SalaryApproval: false, OfferLetterGenerated: false, OfferLetterSent: false,
     CandidateAccepted: false, BackgroundVerification: false,
     DocumentsReceived: false, JoiningDateConfirmed: false,
   });
+  const [commentHistory, setCommentHistory] = useState([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [newComment, setNewComment] = useState("");
+  const [postingComment, setPostingComment] = useState(false);
+  
+  // ── Role-based access ──────────────────────────────────────────────────────
+  const userRole = (localStorage.getItem("role") || "").toLowerCase();
+  const userDepartment = localStorage.getItem("department") || "";
+  const userEmployeeId = String(
+    JSON.parse(localStorage.getItem("user") || "{}").id || ""
+  );
+  
+  const isHr = userRole === "hr" || userRole === "admin";
+  const isManager = userRole === "manager";
+  const isLead = userRole === "lead";
 
   // ── Data ────────────────────────────────────────────────────────────────────
 
+  // FIXED: Added userRole and userDepartment to dependency array
   const refreshCandidates = useCallback(async () => {
     try {
-      const res  = await fetch(`${apiUrl}/api/candidates/pipeline?t=${Date.now()}`);
+      const res  = await fetch(`${apiUrl}/api/candidates/pipeline?t=${Date.now()}&role=${encodeURIComponent(userRole)}&department=${encodeURIComponent(userDepartment)}`);
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
       setCandidates(list);
@@ -200,29 +275,69 @@ export default function InterviewPipeline() {
       console.error("Refresh error:", err);
       return null;
     }
-  }, []);
+  }, [userRole, userDepartment]); // Fixed: Added dependencies
 
+  useEffect(() => {
+    refreshCandidates().finally(() => setLoading(false));
+  }, [refreshCandidates]); // Fixed: Added refreshCandidates as dependency
+
+  // Master data for the "Schedule Interview" modal: departments + managers
   useEffect(() => {
     (async () => {
       try {
-        setLoading(true);
-        const res  = await fetch(`${apiUrl}/api/candidates/pipeline`);
-        const data = await res.json();
-        setCandidates(Array.isArray(data) ? data : []);
+        const [deptRes, empRes] = await Promise.all([
+          fetch(`${apiUrl}${DEPARTMENTS_ENDPOINT}`),
+          fetch(`${apiUrl}${EMPLOYEES_ENDPOINT}`),
+        ]);
+        if (deptRes.ok) setDepartments(await deptRes.json());
+        if (empRes.ok) {
+          const emps = await empRes.json();
+          const list = Array.isArray(emps) ? emps : [];
+          setManagers(list.filter((e) => (e.role || "").toLowerCase() === "manager"));
+        }
       } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
+        console.error("Master data fetch (departments/managers):", err);
       }
     })();
   }, []);
 
+  // Managers filtered to the department selected in the schedule form
+  const filteredManagers = useMemo(() => {
+    if (!scheduleForm.Department) return managers;
+    const dept = departments.find((d) => d.Department === scheduleForm.Department);
+    if (!dept) return managers;
+    return managers.filter((m) => String(m.Department) === String(dept.id));
+  }, [managers, departments, scheduleForm.Department]);
+
+  // Reporting Managers filtered to the department selected in Offer Process form
+const filteredReportingManagers = useMemo(() => {
+  if (!outcomeForm.Department) return managers;
+  const dept = departments.find((d) => d.Department === outcomeForm.Department);
+  if (!dept) return managers;
+  return managers.filter((m) => String(m.Department) === String(dept.id));
+}, [managers, departments, outcomeForm.Department]);
+
+  const managerName = useCallback(
+    (m) => `${m.FirstName || ""} ${m.LastName || ""}`.trim(),
+    []
+  );
+
   // ── Derived ─────────────────────────────────────────────────────────────────
 
-  const activeCandidates = useMemo(
-    () => candidates.filter((c) => c.CandidateStatus !== "Selected" && c.CandidateStatus !== "Rejected"),
-    [candidates]
-  );
+  const activeCandidates = useMemo(() => {
+    let list = candidates.filter((c) => 
+      c.CandidateStatus !== "Selected" && c.CandidateStatus !== "Rejected"
+    );
+
+    if (isManager) {
+      list = list.filter((c) => {
+        const candidateDept = c.AppliedDepartment || "";
+        return candidateDept.toLowerCase().includes(userDepartment.toLowerCase());
+      });
+    }
+
+    return list;
+  }, [candidates, isManager, userDepartment]);
 
   const grouped = useMemo(() => {
     const g = {};
@@ -259,8 +374,53 @@ export default function InterviewPipeline() {
 
   // ── Open modals ──────────────────────────────────────────────────────────────
 
+  const fetchComments = useCallback(async (candidateId) => {
+    setCommentsLoading(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/candidates/comments/${candidateId}`);
+      const data = await res.json();
+      setCommentHistory(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Fetch comments error:", err);
+      setCommentHistory([]);
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, []);
+
+  const handlePostComment = useCallback(async () => {
+    if (!newComment.trim() || !selectedCandidate) return;
+    setPostingComment(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/candidates/comments/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          CandidateID: selectedCandidate.CandidateID,
+          CommentText: newComment.trim(),
+          CommentedBy: userEmployeeId,
+          CommentedByRole: userRole,
+        }),
+      });
+      if (res.ok) {
+        setNewComment("");
+        await fetchComments(selectedCandidate.CandidateID);
+      } else {
+        const err = await res.json();
+        alert(err.message || "Failed to add comment");
+      }
+    } catch (err) {
+      console.error("Post comment error:", err);
+      alert("Failed to add comment");
+    } finally {
+      setPostingComment(false);
+    }
+  }, [newComment, selectedCandidate, userEmployeeId, userRole, fetchComments]);
+
   const openProfile = useCallback((candidate) => {
     setSelectedCandidate(candidate);
+    setNewComment("");
+    fetchComments(candidate.CandidateID);
     const round  = candidate.CurrentRoundName;
     const status = candidate.CandidateStatus;
     let init = {};
@@ -305,30 +465,46 @@ export default function InterviewPipeline() {
 
     setOutcomeForm(init);
     setShowProfileModal(true);
-  }, []);
+  }, [fetchComments]);
 
   const openSchedule = useCallback((candidate) => {
+    if (!isHr) {
+      alert("Only HR can schedule interviews");
+      return;
+    }
     setSelectedCandidate(candidate);
     const nextRound = getNextRoundName(candidate.CurrentRoundName);
     setScheduleForm({
       RoundName: nextRound || "Domain Interview",
       InterviewDate: "", InterviewTime: "",
-      InterviewMode: "Online", InterviewerName: "",
+      InterviewMode: "Online",
+      InterviewerId: "", InterviewerName: "",
       InterviewerDesignation: "", Department: "",
       MeetingLink: "", Location: "",
+      AdditionalInterviewers: [],
     });
     setShowScheduleModal(true);
-  }, []);
+  }, [isHr]);
 
   // ── Submit: Schedule ─────────────────────────────────────────────────────────
 
   const handleScheduleSubmit = async (e) => {
     e.preventDefault();
+    if (!isHr) {
+      alert("Only HR can schedule interviews");
+      return;
+    }
     try {
       const res = await fetch(`${apiUrl}/api/candidates/interviews/schedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ CandidateID: selectedCandidate.CandidateID, ...scheduleForm }),
+        body: JSON.stringify({ 
+          CandidateID: selectedCandidate.CandidateID, 
+          ...scheduleForm,
+          AdditionalInterviewers: JSON.stringify(scheduleForm.AdditionalInterviewers || []),
+          ScheduledBy: userEmployeeId,
+          ScheduledByRole: userRole,
+        }),
       });
       if (res.ok) {
         setShowScheduleModal(false);
@@ -348,17 +524,42 @@ export default function InterviewPipeline() {
 
   const handleOutcomeSubmit = async (e) => {
     e.preventDefault();
-    const c      = selectedCandidate;
+    const c = selectedCandidate;
     const status = c.CandidateStatus;
 
-    // Applied → resume screening only updates status
+    if (!isHr && !isManager) {
+      alert("You are not authorized to evaluate candidates");
+      return;
+    }
+
+    if (isManager && Number(c.AssignedInterviewerId) !== Number(userEmployeeId)) {
+      alert("You can only evaluate interviews assigned to you");
+      return;
+    }
+
+    const managerOnlyRounds = ["Domain Interview", "Management Interview"];
+    if (managerOnlyRounds.includes(c.CurrentRoundName) && !isManager) {
+      alert("Domain and Management interview rounds are evaluated by the assigned interviewer, not HR.");
+      return;
+    }
+
+    // Applied → resume screening (only HR)
     if (status === "Applied") {
+      if (!isHr) {
+        alert("Only HR can review resumes");
+        return;
+      }
       try {
         const newStatus = outcomeForm.Result === "Pass" ? "Interview Scheduled" : "Rejected";
         const res = await fetch(`${apiUrl}/api/candidates/update-status`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ CandidateID: c.CandidateID, CandidateStatus: newStatus }),
+          body: JSON.stringify({ 
+            CandidateID: c.CandidateID, 
+            CandidateStatus: newStatus,
+            UpdatedBy: userEmployeeId,
+            UpdatedByRole: userRole,
+          }),
         });
         if (res.ok) {
           setShowProfileModal(false);
@@ -394,6 +595,8 @@ export default function InterviewPipeline() {
       OverallScore:         calculateScore(),
       Strengths:            outcomeForm.Strengths   || null,
       Weaknesses:           outcomeForm.Weaknesses  || null,
+      EvaluatedBy:          userEmployeeId,
+      EvaluatedByRole:      userRole,
     };
 
     try {
@@ -414,10 +617,14 @@ export default function InterviewPipeline() {
 
       if (outcomeForm.Result === "Pass") {
         const nextRound = getNextRoundName(c.CurrentRoundName);
-        alert(nextRound
-          ? `Evaluation saved! Now schedule the ${nextRound}.`
-          : "Evaluation saved!"
-        );
+        if (isHr) {
+          alert(nextRound
+            ? `Evaluation saved! Now schedule the ${nextRound}.`
+            : "Evaluation saved!"
+          );
+        } else {
+          alert("Evaluation saved! HR will schedule the next round.");
+        }
       } else if (outcomeForm.Result === "Fail") {
         alert("Candidate rejected.");
       } else {
@@ -434,6 +641,10 @@ export default function InterviewPipeline() {
   const allTasksDone = useMemo(() => Object.values(offerTasks).every(Boolean), [offerTasks]);
 
   const handleMarkSelected = async () => {
+    if (!isHr) {
+      alert("Only HR can mark candidates as Selected");
+      return;
+    }
     if (!allTasksDone) {
       alert("Complete all checklist items first.");
       return;
@@ -453,6 +664,8 @@ export default function InterviewPipeline() {
           ReportingManager: outcomeForm.ReportingManager,
           JoiningDate:      outcomeForm.JoiningDate,
           Remarks:          outcomeForm.Remarks,
+          EvaluatedBy:      userEmployeeId,
+          EvaluatedByRole:  userRole,
         }),
       });
       if (res.ok) {
@@ -475,7 +688,11 @@ export default function InterviewPipeline() {
     <div style={s.page}>
       <div style={s.pageHead}>
         <h1 style={s.pageTitle}>Interview Pipeline</h1>
-        <p style={s.pageSub}>Track and manage candidates across all stages</p>
+        <p style={s.pageSub}>
+          {isHr ? "Track and manage candidates across all stages" :
+           isManager ? "View and evaluate candidates assigned to your department" :
+           "View all candidates in the pipeline"}
+        </p>
       </div>
 
       <div style={s.statsGrid}>
@@ -501,7 +718,7 @@ export default function InterviewPipeline() {
                 ) : (
                   grouped[stage].map((c) => {
                     const st      = STATUS_STYLE[c.CandidateStatus] ?? STATUS_STYLE["On Hold"];
-                    const actions = getCardActions(c);
+                    const actions = getCardActions(c, userRole, userEmployeeId);
                     const result  = c.EvaluationResult;
 
                     return (
@@ -517,6 +734,9 @@ export default function InterviewPipeline() {
                         <div style={s.tags}>
                           <span style={s.tag}>⏳ {c.TotalExperience || 0} yrs</span>
                           <span style={s.tag}>🏢 {c.CurrentCompany || "—"}</span>
+                          {c.AssignedInterviewerName && (
+                            <span style={s.tag}>👤 {c.AssignedInterviewerName}</span>
+                          )}
                         </div>
 
                         <div style={{ margin: "10px 0 8px", display: "flex", flexWrap: "wrap", gap: "6px" }}>
@@ -547,7 +767,9 @@ export default function InterviewPipeline() {
                           )}
                           {!actions.evaluate && !actions.schedule && (
                             <span style={{ color: C.muted, fontSize: "12px", padding: "8px 0" }}>
-                              Waiting for action
+                              {isLead ? "View only"
+                                : actions.waitingOnManager ? "Awaiting interviewer evaluation"
+                                : "Waiting for action"}
                             </span>
                           )}
                         </div>
@@ -571,6 +793,11 @@ export default function InterviewPipeline() {
                 <div>
                   <div style={s.modalName}>{selectedCandidate.FirstName} {selectedCandidate.LastName}</div>
                   <div style={s.modalPos}>{selectedCandidate.AppliedDesignation}</div>
+                  {selectedCandidate.AssignedInterviewerName && (
+                    <div style={{ fontSize: "12px", color: C.muted, marginTop: "2px" }}>
+                      Assigned to: {selectedCandidate.AssignedInterviewerName}
+                    </div>
+                  )}
                 </div>
               </div>
               <button style={s.closeBtn} onClick={() => setShowProfileModal(false)}>✕</button>
@@ -625,19 +852,60 @@ export default function InterviewPipeline() {
                 <p style={{ color: C.muted, fontSize: "13px" }}>No interview history yet.</p>
               )}
 
-              {/* 1. Applied → Resume Screening */}
-              {selectedCandidate.CandidateStatus === "Applied" && (
+              {/* Comments section */}
+              <SectionLabel>Comments</SectionLabel>
+              <div style={{ marginBottom: "16px" }}>
+                {commentsLoading ? (
+                  <p style={{ color: C.muted, fontSize: "13px" }}>Loading comments…</p>
+                ) : commentHistory.length ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "12px" }}>
+                    {commentHistory.map((cm) => (
+                      <div key={cm.CommentID} style={{ padding: "10px 12px", background: C.inputBg, borderRadius: "8px", border: `1px solid ${C.borderLight}` }}>
+                        <div style={{ fontSize: "12px", color: C.muted, marginBottom: "4px", display: "flex", justifyContent: "space-between" }}>
+                          <span>{cm.CommentedByName || cm.CommentedByRole || "Team member"}</span>
+                          <span>{new Date(cm.CreatedDate).toLocaleString()}</span>
+                        </div>
+                        <div style={{ fontSize: "13.5px", color: C.text }}>{cm.CommentText}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ color: C.muted, fontSize: "13px", marginBottom: "12px" }}>No comments yet.</p>
+                )}
+                {!isLead && (
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <textarea
+                      placeholder="Add a remark about this candidate…"
+                      value={newComment}
+                      onChange={(e) => setNewComment(e.target.value)}
+                      style={{ ...s.textarea, minHeight: "44px", flex: 1 }}
+                      rows={2}
+                    />
+                    <button
+                      type="button"
+                      style={{ ...s.btnOutline, flex: "none", alignSelf: "flex-end", padding: "10px 16px" }}
+                      disabled={!newComment.trim() || postingComment}
+                      onClick={handlePostComment}
+                    >
+                      {postingComment ? "Posting…" : "Add"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* 1. Applied → Resume Screening (HR Only) */}
+              {selectedCandidate.CandidateStatus === "Applied" && isHr && (
                 <>
                   <SectionLabel>Resume Screening</SectionLabel>
                   <form onSubmit={handleOutcomeSubmit}>
                     <div style={s.scoreGrid}>
                       <div style={s.fieldCol}>
                         <label style={s.scoreLabel}>Resume Score</label>
-                        <ScoreSelect field="ResumeScore" value={outcomeForm.ResumeScore} onChange={setField} />
+                        <RatingSelect field="ResumeScore" value={outcomeForm.ResumeScore} onChange={setField} />
                       </div>
                       <div style={s.fieldCol}>
                         <label style={s.scoreLabel}>Relevant Experience</label>
-                        <ScoreSelect field="RelevantExperience" value={outcomeForm.RelevantExperience} onChange={setField} />
+                        <RatingSelect field="RelevantExperience" value={outcomeForm.RelevantExperience} onChange={setField} />
                       </div>
                       <div style={s.fieldCol}>
                         <label style={s.scoreLabel}>Current CTC</label>
@@ -676,8 +944,10 @@ export default function InterviewPipeline() {
                 </>
               )}
 
-              {/* 2. Domain Interview */}
-              {selectedCandidate.CurrentRoundName === "Domain Interview" && (
+              {/* 2. Domain Interview - Assigned Manager ONLY */}
+              {selectedCandidate.CurrentRoundName === "Domain Interview" &&
+               isManager &&
+               Number(selectedCandidate.AssignedInterviewerId) === Number(userEmployeeId) && (
                 <>
                   <SectionLabel>Domain Interview Evaluation</SectionLabel>
                   <form onSubmit={handleOutcomeSubmit}>
@@ -685,7 +955,7 @@ export default function InterviewPipeline() {
                       {["TechnicalKnowledge","ProblemSolving","DomainKnowledge","HandsOnExperience","ProjectExposure","CommunicationSkills"].map((f) => (
                         <div key={f} style={s.fieldCol}>
                           <label style={s.scoreLabel}>{f.replace(/([A-Z])/g, " $1").trim()}</label>
-                          <ScoreSelect field={f} value={outcomeForm[f]} onChange={setField} />
+                          <RatingSelect field={f} value={outcomeForm[f]} onChange={setField} />
                         </div>
                       ))}
                       <div style={s.fieldCol}>
@@ -717,8 +987,9 @@ export default function InterviewPipeline() {
                 </>
               )}
 
-              {/* 3. Management Interview */}
-              {selectedCandidate.CurrentRoundName === "Management Interview" && (
+              {/* 3. Management Interview - Assigned Manager ONLY */}
+              {selectedCandidate.CurrentRoundName === "Management Interview" && 
+               Number(selectedCandidate.AssignedInterviewerId) === Number(userEmployeeId) && (
                 <>
                   <SectionLabel>Management Interview Evaluation</SectionLabel>
                   <form onSubmit={handleOutcomeSubmit}>
@@ -726,7 +997,7 @@ export default function InterviewPipeline() {
                       {["Leadership","Ownership","Teamwork","ConflictHandling","DecisionMaking","CultureFit","Stability"].map((f) => (
                         <div key={f} style={s.fieldCol}>
                           <label style={s.scoreLabel}>{f.replace(/([A-Z])/g, " $1").trim()}</label>
-                          <ScoreSelect field={f} value={outcomeForm[f]} onChange={setField} />
+                          <RatingSelect field={f} value={outcomeForm[f]} onChange={setField} />
                         </div>
                       ))}
                     </div>
@@ -750,8 +1021,8 @@ export default function InterviewPipeline() {
                 </>
               )}
 
-              {/* 4. Offer Discussion */}
-              {selectedCandidate.CurrentRoundName === "Offer Discussion" && (
+              {/* 4. Offer Discussion - HR Only */}
+              {selectedCandidate.CurrentRoundName === "Offer Discussion" && isHr && (
                 <>
                   <SectionLabel>Offer Discussion</SectionLabel>
                   <form onSubmit={handleOutcomeSubmit}>
@@ -789,69 +1060,145 @@ export default function InterviewPipeline() {
                 </>
               )}
 
-              {/* 5. Offer Process Checklist */}
-              {selectedCandidate.CurrentRoundName === "Offer Process" && (
-                <>
-                  <SectionLabel>Offer Process Checklist</SectionLabel>
-                  <form onSubmit={(e) => e.preventDefault()}>
-                    <div style={s.checklist}>
-                      {Object.keys(offerTasks).map((key) => (
-                        <label key={key} style={s.checkRow}>
-                          <input
-                            type="checkbox"
-                            checked={offerTasks[key]}
-                            onChange={(e) => setOfferTasks((p) => ({ ...p, [key]: e.target.checked }))}
-                          />
-                          <span>{key.replace(/([A-Z])/g, " $1").trim()}</span>
-                        </label>
-                      ))}
-                    </div>
-                    <div style={{ ...s.scoreGrid, marginTop: "20px" }}>
-                      {[
-                        { key: "OfferCTC",         label: "Offer CTC",         type: "text" },
-                        { key: "Designation",      label: "Designation",       type: "text" },
-                        { key: "Department",       label: "Department",        type: "text" },
-                        { key: "ReportingManager", label: "Reporting Manager", type: "text" },
-                        { key: "JoiningDate",      label: "Joining Date",      type: "date" },
-                        { key: "WorkLocation",     label: "Work Location",     type: "text" },
-                        { key: "EmploymentType",   label: "Employment Type",   type: "text" },
-                      ].map(({ key, label, type }) => (
-                        <div key={key} style={s.fieldCol}>
-                          <label style={s.scoreLabel}>{label}</label>
-                          <input type={type} value={outcomeForm[key] || ""} onChange={(e) => setField(key, e.target.value)} style={s.scoreInput} />
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ marginTop: "16px" }}>
-                      <label style={s.scoreLabel}>Final Remarks</label>
-                      <textarea placeholder="Final remarks…" value={outcomeForm.Remarks || ""} onChange={(e) => setField("Remarks", e.target.value)} style={{ ...s.textarea, marginTop: "6px" }} rows={3} />
-                    </div>
-                    {!allTasksDone && (
-                      <div style={s.checklistNote}>
-                        Complete all checklist items to enable "Mark as Selected"
-                      </div>
-                    )}
-                    <div style={s.modalFoot}>
-                      <button type="button" style={s.cancelBtn} onClick={() => setShowProfileModal(false)}>Cancel</button>
-                      <button
-                        type="button"
-                        style={{ ...s.primaryBtn, opacity: allTasksDone ? 1 : 0.5, cursor: allTasksDone ? "pointer" : "not-allowed" }}
-                        onClick={handleMarkSelected}
-                        disabled={!allTasksDone}
-                      >
-                        Mark as Selected
-                      </button>
-                    </div>
-                  </form>
-                </>
-              )}
+            {/* 5. Offer Process Checklist - HR Only */}
+{selectedCandidate.CurrentRoundName === "Offer Process" && isHr && (
+  <>
+    <SectionLabel>Offer Process Checklist</SectionLabel>
+    <form onSubmit={(e) => e.preventDefault()}>
+      <div style={s.checklist}>
+        {Object.keys(offerTasks).map((key) => (
+          <label key={key} style={s.checkRow}>
+            <input
+              type="checkbox"
+              checked={offerTasks[key]}
+              onChange={(e) => setOfferTasks((p) => ({ ...p, [key]: e.target.checked }))}
+            />
+            <span>{key.replace(/([A-Z])/g, " $1").trim()}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ ...s.scoreGrid, marginTop: "20px" }}>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Offer CTC</label>
+          <input type="text" value={outcomeForm.OfferCTC || ""} onChange={(e) => setField("OfferCTC", e.target.value)} style={s.scoreInput} />
+        </div>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Designation</label>
+          <input type="text" value={outcomeForm.Designation || ""} onChange={(e) => setField("Designation", e.target.value)} style={s.scoreInput} />
+        </div>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Department</label>
+          <select 
+            value={outcomeForm.Department || ""} 
+            onChange={(e) => {
+              setField("Department", e.target.value);
+              setField("ReportingManager", ""); // Reset reporting manager when department changes
+            }} 
+            style={s.select}
+          >
+            <option value="">Select Department</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.Department}>{d.Department}</option>
+            ))}
+          </select>
+        </div>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Reporting Manager</label>
+          <select 
+            value={outcomeForm.ReportingManager || ""} 
+            onChange={(e) => setField("ReportingManager", e.target.value)} 
+            style={s.select}
+          >
+            <option value="">Select Reporting Manager</option>
+            {filteredReportingManagers.map((m) => (
+              <option key={m.EmployeeID} value={managerName(m)}>
+                {managerName(m)}
+              </option>
+            ))}
+          </select>
+          {outcomeForm.Department && filteredReportingManagers.length === 0 && (
+            <span style={{ fontSize: "12px", color: C.muted }}>
+              No managers found in this department.
+            </span>
+          )}
+        </div>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Joining Date</label>
+          <input type="date" value={outcomeForm.JoiningDate || ""} onChange={(e) => setField("JoiningDate", e.target.value)} style={s.scoreInput} />
+        </div>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Work Location</label>
+          <input type="text" value={outcomeForm.WorkLocation || ""} onChange={(e) => setField("WorkLocation", e.target.value)} style={s.scoreInput} />
+        </div>
+        <div style={s.fieldCol}>
+          <label style={s.scoreLabel}>Employment Type</label>
+          <input type="text" value={outcomeForm.EmploymentType || ""} onChange={(e) => setField("EmploymentType", e.target.value)} style={s.scoreInput} />
+        </div>
+      </div>
+      <div style={{ marginTop: "16px" }}>
+        <label style={s.scoreLabel}>Final Remarks</label>
+        <textarea placeholder="Final remarks…" value={outcomeForm.Remarks || ""} onChange={(e) => setField("Remarks", e.target.value)} style={{ ...s.textarea, marginTop: "6px" }} rows={3} />
+      </div>
+      {!allTasksDone && (
+        <div style={s.checklistNote}>
+          Complete all checklist items to enable "Mark as Selected"
+        </div>
+      )}
+      <div style={s.modalFoot}>
+        <button type="button" style={s.cancelBtn} onClick={() => setShowProfileModal(false)}>Cancel</button>
+        <button
+          type="button"
+          style={{ ...s.primaryBtn, opacity: allTasksDone ? 1 : 0.5, cursor: allTasksDone ? "pointer" : "not-allowed" }}
+          onClick={handleMarkSelected}
+          disabled={!allTasksDone}
+        >
+          Mark as Selected
+        </button>
+      </div>
+    </form>
+  </>
+)}
+              {/* Read-only fallback */}
+              {(() => {
+                const stage = selectedCandidate.CurrentRoundName;
+                const status = selectedCandidate.CandidateStatus;
+                const isManagerStage = stage === "Domain Interview" || stage === "Management Interview";
+                const isHrStage = stage === "Offer Discussion" || stage === "Offer Process";
+                const assignedToMe = isManager && Number(selectedCandidate.AssignedInterviewerId) === Number(userEmployeeId);
+
+                const handledAlready =
+                  (status === "Applied" && isHr) ||
+                  (isManagerStage && assignedToMe) ||
+                  (isHrStage && isHr);
+
+                if (handledAlready) return null;
+
+                let message = "You do not have permission to evaluate this candidate.";
+                if (isLead) {
+                  message = "You have read-only access to this candidate.";
+                } else if (isHr && isManagerStage) {
+                  message = selectedCandidate.AssignedInterviewerName
+                    ? `This round is being evaluated by ${selectedCandidate.AssignedInterviewerName}. You'll be able to schedule the next round once they submit their evaluation.`
+                    : "This round is awaiting evaluation by the assigned interviewer.";
+                } else if (isManager && isManagerStage && !assignedToMe) {
+                  message = "This interview is assigned to another interviewer.";
+                } else if (isManager && !isManagerStage) {
+                  message = "This stage is handled by HR.";
+                }
+
+                return (
+                  <div style={{ padding: "20px", textAlign: "center", color: C.muted }}>
+                    <p>{message}</p>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
       )}
 
-      {/* ── Schedule Modal ──────────────────────────────────────────────────── */}
-      {showScheduleModal && selectedCandidate && (
+      {/* ── Schedule Modal (HR Only) ────────────────────────────────────────── */}
+      {showScheduleModal && selectedCandidate && isHr && (
         <div style={s.overlay}>
           <div style={s.scheduleModal}>
             <div style={s.modalHead}>
@@ -864,55 +1211,225 @@ export default function InterviewPipeline() {
             <form onSubmit={handleScheduleSubmit} style={s.modalBody}>
               <div style={s.fieldCol}>
                 <label style={s.scoreLabel}>Round</label>
-                <input type="text" value={scheduleForm.RoundName} readOnly style={{ ...s.scoreInput, background: "#f0f0f0", cursor: "default" }} />
+                <input 
+                  type="text" 
+                  value={scheduleForm.RoundName} 
+                  readOnly 
+                  style={{ ...s.scoreInput, background: "#f0f0f0", cursor: "default" }} 
+                />
               </div>
+              
               <div style={s.scoreGrid}>
                 <div style={s.fieldCol}>
                   <label style={s.scoreLabel}>Date</label>
-                  <input type="date" value={scheduleForm.InterviewDate} onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewDate: e.target.value }))} style={s.scoreInput} required />
+                  <input 
+                    type="date" 
+                    value={scheduleForm.InterviewDate} 
+                    onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewDate: e.target.value }))} 
+                    style={s.scoreInput} 
+                    required 
+                  />
                 </div>
                 <div style={s.fieldCol}>
                   <label style={s.scoreLabel}>Time</label>
-                  <input type="time" value={scheduleForm.InterviewTime} onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewTime: e.target.value }))} style={s.scoreInput} required />
+                  <input 
+                    type="time" 
+                    value={scheduleForm.InterviewTime} 
+                    onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewTime: e.target.value }))} 
+                    style={s.scoreInput} 
+                    required 
+                  />
                 </div>
               </div>
+              
               <div style={s.fieldCol}>
                 <label style={s.scoreLabel}>Mode</label>
-                <select value={scheduleForm.InterviewMode} onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewMode: e.target.value }))} style={s.select}>
+                <select 
+                  value={scheduleForm.InterviewMode} 
+                  onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewMode: e.target.value }))} 
+                  style={s.select}
+                >
                   <option value="Online">Online</option>
                   <option value="In Person">In Person</option>
                   <option value="Telephonic">Telephonic</option>
                 </select>
               </div>
-              <div style={s.scoreGrid}>
-                <div style={s.fieldCol}>
-                  <label style={s.scoreLabel}>Interviewer Name</label>
-                  <input type="text" placeholder="Full name" value={scheduleForm.InterviewerName} onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewerName: e.target.value }))} style={s.scoreInput} required />
-                </div>
-                <div style={s.fieldCol}>
-                  <label style={s.scoreLabel}>Designation</label>
-                  <input type="text" placeholder="e.g. Senior Engineer" value={scheduleForm.InterviewerDesignation} onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewerDesignation: e.target.value }))} style={s.scoreInput} />
-                </div>
-              </div>
-              <div style={s.fieldCol}>
-                <label style={s.scoreLabel}>Department</label>
-                <input type="text" placeholder="e.g. Engineering" value={scheduleForm.Department} onChange={(e) => setScheduleForm((p) => ({ ...p, Department: e.target.value }))} style={s.scoreInput} />
-              </div>
+
+              {/* Only show Department, Interviewer, and Additional Interviewers for Domain/Management rounds */}
+              {(scheduleForm.RoundName === "Domain Interview" || scheduleForm.RoundName === "Management Interview") && (
+                <>
+                  <div style={s.fieldCol}>
+                    <label style={s.scoreLabel}>Department</label>
+                    <select 
+                      value={scheduleForm.Department} 
+                      onChange={(e) => setScheduleForm((p) => ({
+                        ...p,
+                        Department: e.target.value,
+                        InterviewerId: "", 
+                        InterviewerName: "", 
+                        InterviewerDesignation: "",
+                        AdditionalInterviewers: [],
+                      }))}
+                      style={s.select}
+                      required
+                    >
+                      <option value="">Select Department</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.Department}>{d.Department}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={s.scoreGrid}>
+                    <div style={s.fieldCol}>
+                      <label style={s.scoreLabel}>Interviewer Name</label>
+                      <select 
+                        value={scheduleForm.InterviewerId} 
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          const m = filteredManagers.find((x) => String(x.EmployeeID) === id);
+                          setScheduleForm((p) => ({
+                            ...p,
+                            InterviewerId: id,
+                            InterviewerName: m ? managerName(m) : "",
+                          }));
+                        }}
+                        style={s.select}
+                        required
+                      >
+                        <option value="">Select Interviewer</option>
+                        {filteredManagers.map((m) => (
+                          <option key={m.EmployeeID} value={m.EmployeeID}>{managerName(m)}</option>
+                        ))}
+                      </select>
+                      {scheduleForm.Department && filteredManagers.length === 0 && (
+                        <span style={{ fontSize: "12px", color: C.muted }}>
+                          No managers found in this department.
+                        </span>
+                      )}
+                    </div>
+                    <div style={s.fieldCol}>
+                      <label style={s.scoreLabel}>Designation</label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. Senior Engineer" 
+                        value={scheduleForm.InterviewerDesignation} 
+                        onChange={(e) => setScheduleForm((p) => ({ ...p, InterviewerDesignation: e.target.value }))} 
+                        style={s.scoreInput} 
+                      />
+                    </div>
+                  </div>
+
+                  {/* Additional Interviewers */}
+                  <div style={s.fieldCol}>
+                    <label style={s.scoreLabel}>Additional Interviewers</label>
+                    {scheduleForm.AdditionalInterviewers.map((row, idx) => (
+                      <div key={idx} style={{ ...s.scoreGrid, marginBottom: "8px" }}>
+                        <select
+                          value={row.EmployeeID}
+                          onChange={(e) => {
+                            const id = e.target.value;
+                            const m = filteredManagers.find((x) => String(x.EmployeeID) === id);
+                            setScheduleForm((p) => {
+                              const next = [...p.AdditionalInterviewers];
+                              next[idx] = { 
+                                EmployeeID: id, 
+                                Name: m ? managerName(m) : "", 
+                                Designation: row.Designation 
+                              };
+                              return { ...p, AdditionalInterviewers: next };
+                            });
+                          }}
+                          style={s.select}
+                        >
+                          <option value="">Select Interviewer</option>
+                          {filteredManagers
+                            .filter((m) => String(m.EmployeeID) !== String(scheduleForm.InterviewerId))
+                            .map((m) => (
+                              <option key={m.EmployeeID} value={m.EmployeeID}>
+                                {managerName(m)}
+                              </option>
+                            ))}
+                        </select>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <input
+                            type="text"
+                            placeholder="Designation"
+                            value={row.Designation}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setScheduleForm((p) => {
+                                const next = [...p.AdditionalInterviewers];
+                                next[idx] = { ...next[idx], Designation: val };
+                                return { ...p, AdditionalInterviewers: next };
+                              });
+                            }}
+                            style={s.scoreInput}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setScheduleForm((p) => ({
+                              ...p,
+                              AdditionalInterviewers: p.AdditionalInterviewers.filter((_, i) => i !== idx),
+                            }))}
+                            style={{ ...s.cancelBtn, padding: "10px 14px" }}
+                            aria-label="Remove interviewer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setScheduleForm((p) => ({
+                        ...p,
+                        AdditionalInterviewers: [
+                          ...p.AdditionalInterviewers, 
+                          { EmployeeID: "", Name: "", Designation: "" }
+                        ],
+                      }))}
+                      style={{ ...s.btnOutline, flex: "none", padding: "8px 14px", alignSelf: "flex-start" }}
+                    >
+                      + Add Interviewer
+                    </button>
+                  </div>
+                </>
+              )}
+
               {scheduleForm.InterviewMode === "Online" && (
                 <div style={s.fieldCol}>
                   <label style={s.scoreLabel}>Meeting Link</label>
-                  <input type="url" placeholder="https://meet.google.com/…" value={scheduleForm.MeetingLink} onChange={(e) => setScheduleForm((p) => ({ ...p, MeetingLink: e.target.value }))} style={s.scoreInput} />
+                  <input 
+                    type="url" 
+                    placeholder="https://meet.google.com/…" 
+                    value={scheduleForm.MeetingLink} 
+                    onChange={(e) => setScheduleForm((p) => ({ ...p, MeetingLink: e.target.value }))} 
+                    style={s.scoreInput} 
+                  />
                 </div>
               )}
+              
               {scheduleForm.InterviewMode === "In Person" && (
                 <div style={s.fieldCol}>
                   <label style={s.scoreLabel}>Location</label>
-                  <input type="text" placeholder="Conference Room / Office" value={scheduleForm.Location} onChange={(e) => setScheduleForm((p) => ({ ...p, Location: e.target.value }))} style={s.scoreInput} />
+                  <input 
+                    type="text" 
+                    placeholder="Conference Room / Office" 
+                    value={scheduleForm.Location} 
+                    onChange={(e) => setScheduleForm((p) => ({ ...p, Location: e.target.value }))} 
+                    style={s.scoreInput} 
+                  />
                 </div>
               )}
+              
               <div style={s.modalFoot}>
-                <button type="button" style={s.cancelBtn} onClick={() => setShowScheduleModal(false)}>Cancel</button>
-                <button type="submit" style={s.primaryBtn}>Confirm Schedule</button>
+                <button type="button" style={s.cancelBtn} onClick={() => setShowScheduleModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" style={s.primaryBtn}>
+                  Confirm Schedule
+                </button>
               </div>
             </form>
           </div>
@@ -983,4 +1500,3 @@ const s = {
   primaryBtn: { padding: "10px 24px", background: C.accent, color: "#fff", border: "none", borderRadius: RADIUS.button, cursor: "pointer", fontSize: "13.5px", fontWeight: "600" },
   resumeBtn:  { padding: "9px 16px", fontSize: "13px", fontWeight: "600", background: C.primary, color: "#fff", border: "none", borderRadius: RADIUS.button, cursor: "pointer" },
 };
-
