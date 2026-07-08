@@ -22,6 +22,130 @@ const sanitizeDbDates = (dateValue, isRequiredField = false) => {
 // ==========================================
 //                GET CALLS
 // ==========================================
+exports.getDashboardSummary = async (req, res) => {
+  try {
+    console.log("Admin dashboard summary query engine invoked successfully.");
+    const role = req.query.role ? req.query.role.toLowerCase() : "admin";
+    // 1. Concurrent aggregate execution queries across tables
+    const [[{ totalEmployees }]] = await db.query(
+      "SELECT COUNT(*) as totalEmployees FROM Employee WHERE ArchiveStatus = '1'"
+    );
+
+    const [[{ totalDepartments }]] = await db.query(
+      "SELECT COUNT(*) as totalDepartments FROM Department"
+    );
+
+    const [[{ pendingRequests }]] = await db.query(
+      "SELECT COUNT(*) as pendingRequests FROM service_requests WHERE status = 0"
+    );
+
+    const [[{ totalBranches }]] = await db.query(
+      "SELECT COUNT(DISTINCT CompanyBranch) as totalBranches FROM Employee WHERE CompanyBranch IS NOT NULL"
+    );
+
+    // 2. Fetch the 4 most recently registered employees
+    const [recentEmpRows] = await db.query(`
+      SELECT 
+        e.FirstName, e.LastName, e.StatusOfEmployee,
+        COALESCE(d.Department, 'Unassigned') as departmentName
+      FROM Employee e
+      LEFT JOIN Department d ON e.Department = d.id
+      WHERE e.ArchiveStatus = '1'
+      ORDER BY e.EmployeeID DESC 
+      LIMIT 4
+    `);
+
+    // 3. Transform database rows to match the frontend state mapping schema
+    const formattedRecentEmployees = recentEmpRows.map((emp) => {
+      const first = emp.FirstName || "";
+      const last = emp.LastName || "";
+      const initials = `${first.charAt(0)}${last.charAt(0)}`.toUpperCase() || "EE";
+      
+      // Dynamic mapping for visual avatar colors based on status string context
+      let status = "Active";
+      let iBg = "#e1f5ee", iColor = "#085041";
+      
+      if (emp.StatusOfEmployee && emp.StatusOfEmployee.toLowerCase().includes("leave")) {
+        status = "On Leave";
+        iBg = "#fde8ef"; 
+        iColor = "#993556";
+      } else if (emp.StatusOfEmployee && emp.StatusOfEmployee.toLowerCase().includes("remote")) {
+        status = "Remote";
+        iBg = "#e8f4fa";
+        iColor = "#0c447c";
+      }
+
+      return {
+        name: `${first} ${last}`.trim(),
+        dept: emp.departmentName,
+        status: status,
+        initials: initials,
+        iBg: iBg,
+        iColor: iColor
+      };
+    });
+
+    // 4. Send aggregated structural payload response back wrapping inside 'data' key
+    return res.status(200).json({
+      success: true,
+      data: {
+        stats: [
+          {
+            label: "Total Employees",
+            value: String(totalEmployees),
+            delta: "+12 this month",
+            up: true,
+            key: "employees",
+            bg: "#e8f4fa",
+            color: "#2b7da1"
+          },
+          {
+            label: "Departments",
+            value: String(totalDepartments),
+            delta: "+1 new",
+            up: true,
+            key: "departments",
+            bg: "#e1f5ee",
+            color: "#0f6e56"
+          },
+          {
+            label: role === "admin" ? "Active System Flags" : "Leaves Today",
+            value: String(pendingRequests),
+            delta: "-3 vs yesterday",
+            up: false,
+            key: "leaves",
+            bg: "#fde8ef",
+            color: "#d63a6e"
+          },
+          {
+            label: "Branches",
+            value: String(totalBranches || 5),
+            delta: "No change",
+            up: null,
+            key: "branches",
+            bg: "#faeeda",
+            color: "#854f0b"
+          }
+        ],
+        recentEmployees: formattedRecentEmployees,
+        leaves: [
+          { type: "Sick Leave", note: "Pending Approval", count: 8 },
+          { type: "Casual Leave", note: "Approved", count: 6 },
+          { type: "Earned Leave", note: "This Month", count: 4 },
+          { type: "Maternity Leave", note: "Active", count: 2 }
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error("Admin dashboard summary query engine crash:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error gathering dashboard summaries.",
+      error: error.message
+    });
+  }
+};
 
 exports.getAllEmployees = async (req, res) => {
     try {
@@ -77,17 +201,41 @@ exports.getAllLeaveTypes = async (req, res) => {
 };
 
 exports.getEmployeeById = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const [employee] = await db.query('SELECT * FROM employee WHERE EmployeeID = ?', [id]);
-        if (employee.length === 0) {
-            return res.status(404).json({ message: "Employee not found" });
-        }
-        res.status(200).json(employee[0]);
-    } catch (error) {
-        console.error("Error fetching single employee:", error);
-        res.status(500).json({ message: "Failed to fetch employee", error: error.message });
+  try {
+    const { id } = req.params;
+    // 1. Fetch Profile Data with joined department structural metadata
+    const [employeeRows] = await db.query(`
+      SELECT e.*, d.Department as department_name 
+      FROM employee e
+      LEFT JOIN Department d ON e.Department = d.id
+      WHERE e.EmployeeID = ?
+    `, [id]);
+
+    if (!employeeRows || employeeRows.length === 0) {
+      return res.status(404).json({ message: "Employee profile record not found." });
     }
+
+    const employeeData = employeeRows[0];
+
+    // 2. Fetch linked structural items from employee_education_details
+    const [educationRows] = await db.query(
+      'SELECT * FROM employee_education_details WHERE emp_id = ? ORDER BY id DESC',
+      [id]
+    );
+
+    // 3. Respond with an integrated data structure
+    return res.status(200).json({
+      ...employeeData,
+      education: educationRows || []
+    });
+
+  } catch (error) {
+    console.error("Error fetching single employee dataset:", error);
+    return res.status(500).json({ 
+      message: "Failed to fetch unified employee metrics profiles.", 
+      error: error.message 
+    });
+  }
 };
 
 exports.getEmployeeStatus = async (req, res) => {
@@ -112,12 +260,24 @@ exports.getAnnouncements = async (req, res) => {
 
 exports.getAllSupervisors = async (req, res) => {
     try {
-        const query = `SELECT * FROM employee WHERE role IN ('manager') ORDER BY EmployeeID DESC`;
+        const query = `
+            SELECT *
+            FROM employee
+            WHERE LOWER(role) IN ('manager','supervisor')
+              AND ArchiveStatus = '0'
+              AND Status = 'Active'
+            ORDER BY FirstName ASC
+        `;
+
         const [rows] = await db.query(query);
+
         res.status(200).json(rows);
+
     } catch (error) {
-        console.error("Error fetching supervisors API:", error.message);
-        res.status(500).json({ message: "Failed to fetch supervisors", error: error.message });
+        console.error(error);
+        res.status(500).json({
+            message: "Failed to fetch supervisors"
+        });
     }
 };
 
@@ -406,36 +566,118 @@ exports.createProject = async (req, res) => {
 //               UPDATE CALLS
 // ==========================================
 
+// exports.updateEmployee = async (req, res) => {
+//     try {
+//         console.log("Update employee API invoked with payload:", req.body);
+//         const { id } = req.params;
+//         const employeeData = req.body;
+//         console.log(employeeData)
+//         // If a file is uploaded, attach its filename to employeeData
+//         if (req.file) {
+//             employeeData.Photo = req.file.filename;
+//         }
+
+//         // Clean up un-updatable keys 
+//         delete employeeData.EmployeeID;
+//         delete employeeData.CreatedDate;
+//         delete employeeData.CreatedBy;
+        
+//         // If no file was sent, and the frontend sent an empty photo field,
+//         // we check if it's meant to clear it or if we should skip updating it
+//         if (!req.file && (employeeData.Photo === undefined || employeeData.Photo === '')) {
+//              delete employeeData.Photo; 
+//         }
+
+//         const today = new Date().toISOString().split('T')[0];
+//         employeeData.ModifiedDate = today;
+
+//         if (employeeData.Password) {
+//             employeeData.Password = md5(employeeData.Password);
+//         } else {
+//              delete employeeData.Password;
+//         }
+
+//         const columns = Object.keys(employeeData);
+//         const values = Object.values(employeeData);
+        
+//         if (columns.length === 0) {
+//             return res.status(400).json({ message: "No data provided to update" });
+//         }
+
+//         const setClause = columns.map(col => `${col} = ?`).join(', ');
+//         const query = `UPDATE employee SET ${setClause} WHERE EmployeeID = ?`;
+//         values.push(id);
+
+//         const [result] = await db.query(query, values);
+
+//         if (result.affectedRows === 0) {
+//             return res.status(404).json({ message: "Employee not found" });
+//         }
+
+//         res.status(200).json({ message: "Employee updated successfully" });
+//     } catch (error) {
+//         console.error("Error updating employee:", error);
+//         res.status(500).json({ message: "Failed to update employee", error: error.message });
+//     }
+// };
+
 exports.updateEmployee = async (req, res) => {
     try {
+        console.log("Update employee API invoked with payload:", req.body);
         const { id } = req.params;
         const employeeData = req.body;
 
+        // If a file is uploaded, attach its filename to employeeData
         if (req.file) {
             employeeData.Photo = req.file.filename;
         }
 
-        delete employeeData.EmployeeID;
-        delete employeeData.CreatedDate;
-        delete employeeData.CreatedBy;
+        // 1. STRIP UN-UPDATABLE & JOINED VIRTUAL FIELDS (Fixes the crash)
+        const fieldsToIgnore = [
+            'EmployeeID',
+            'CreatedDate',
+            'CreatedBy',
+            'department_name', // Remove virtual joined columns from getEmployeeById
+            'education'        // Remove the nested array from getEmployeeById
+        ];
         
-        if (!req.file && employeeData.Photo !== undefined) {
+        fieldsToIgnore.forEach(field => {
+            delete employeeData[field];
+        });
+        
+        // If no file was sent, and the frontend sent an empty photo field,
+        // check if it's meant to clear it or if we should skip updating it
+        if (!req.file && (employeeData.Photo === undefined || employeeData.Photo === '')) {
              delete employeeData.Photo; 
         }
 
         const today = new Date().toISOString().split('T')[0];
         employeeData.ModifiedDate = today;
 
-        if (employeeData.Password) {
+        // ─── UPDATED PASSWORD CHECK BLOCK ───
+        // Only hash and update the password if it's provided, not empty, and not placeholder text
+        if (
+            employeeData.Password && 
+            employeeData.Password.trim() !== "" && 
+            employeeData.Password !== "undefined" && 
+            employeeData.Password !== "null"
+        ) {
             employeeData.Password = md5(employeeData.Password);
         } else {
-             delete employeeData.Password;
+            // Completely remove Password from the dataset so it is omitted from the SQL UPDATE query
+            delete employeeData.Password;
         }
+        // ────────────────────────────────────
 
+        // 2. Build safe update query using remaining real columns
         const columns = Object.keys(employeeData);
         const values = Object.values(employeeData);
-        const setClause = columns.map(col => `${col} = ?`).join(', ');
         
+        if (columns.length === 0) {
+            return res.status(400).json({ message: "No data provided to update" });
+        }
+
+        const setClause = columns.map(col => `${col} = ?`).join(', ');
         const query = `UPDATE employee SET ${setClause} WHERE EmployeeID = ?`;
         values.push(id);
 

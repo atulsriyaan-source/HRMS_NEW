@@ -15,13 +15,22 @@ const getNextStage = (currentRoundName) => {
   return PIPELINE_STAGES[idx + 1];
 };
 
+// Rounds a Manager (assigned interviewer) is responsible for evaluating.
+// HR schedules these but does NOT evaluate them.
+const MANAGER_EVALUATED_ROUNDS = ["Domain Interview", "Management Interview"];
+// Rounds HR is responsible for handling end-to-end (scheduling + evaluating).
+const HR_EVALUATED_ROUNDS = ["Offer Discussion", "Offer Process"];
+
 // ─── Create Candidate ──────────────────────────────────────────────────────────
 exports.createCandidate = async (req, res) => {
   try {
     const {
       FirstName, MiddleName, LastName, Gender, DateOfBirth, MaritalStatus,
       Nationality, EmailId, AlternateEmailId, CountryCode1, MobileNo,
-      CountryCode2, AlternateMobileNo, CurrentAddress, City, State, Country,
+      CountryCode2, AlternateMobileNo,
+      SpouseContactNo, MotherContactNo, FatherContactNo,
+      EmergencyContactNo, EmergencyContactName,
+      CurrentAddress, City, State, Country,
       AppliedDesignation, AppliedDepartment, CurrentCompany, CurrentDesignation,
       TotalExperience, CurrentCTC, ExpectedCTC, NoticePeriod, SourceOfHiring,
     } = req.body;
@@ -44,13 +53,16 @@ exports.createCandidate = async (req, res) => {
       `INSERT INTO interview_candidates (
         FirstName, MiddleName, LastName, Gender, DateOfBirth, MaritalStatus, Nationality,
         EmailId, AlternateEmailId, CountryCode1, MobileNo, CountryCode2, AlternateMobileNo,
+        SpouseContactNo, MotherContactNo, FatherContactNo, EmergencyContactNo, EmergencyContactName,
         CurrentAddress, City, State, Country, AppliedDesignation, AppliedDepartment,
         CurrentCompany, CurrentDesignation, TotalExperience, CurrentCTC, ExpectedCTC,
         NoticePeriod, SourceOfHiring, CandidateStatus, ResumeFile, Photo
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         FirstName, MiddleName, LastName, Gender, DateOfBirth, MaritalStatus, Nationality,
         EmailId, AlternateEmailId, CountryCode1, MobileNo, CountryCode2, AlternateMobileNo,
+        SpouseContactNo || null, MotherContactNo || null, FatherContactNo || null,
+        EmergencyContactNo || null, EmergencyContactName || null,
         CurrentAddress, City, State, Country, AppliedDesignation, AppliedDepartment,
         CurrentCompany, CurrentDesignation, TotalExperience, CurrentCTC, ExpectedCTC,
         NoticePeriod, SourceOfHiring, "Applied", resume, photo,
@@ -65,9 +77,21 @@ exports.createCandidate = async (req, res) => {
 };
 
 // ─── Get All Candidates ────────────────────────────────────────────────────────
+
 exports.getCandidates = async (req, res) => {
   try {
-    const [rows] = await db.query(`SELECT * FROM interview_candidates ORDER BY CandidateID DESC`);
+    const { role, department } = req.query;
+    const isManager = (role || "").toLowerCase() === "manager";
+
+    let sql = `SELECT * FROM interview_candidates`;
+    const params = [];
+    if (isManager && department) {
+      sql += ` WHERE AppliedDepartment = ?`;
+      params.push(department);
+    }
+    sql += ` ORDER BY CandidateID DESC`;
+
+    const [rows] = await db.query(sql, params);
     res.json(rows);
   } catch (error) {
     console.error(error);
@@ -91,14 +115,25 @@ exports.getCandidateById = async (req, res) => {
 
 exports.getPipelineCandidates = async (req, res) => {
   try {
-    const [candidates] = await db.query(`
+    // Server-side RBAC (see note on getCandidates above).
+    const { role, department } = req.query;
+    const isManager = (role || "").toLowerCase() === "manager";
+
+    let sql = `
       SELECT * FROM interview_candidates
       WHERE CandidateStatus NOT IN (
         'Offer Accepted','Employee Created','Appointment Letter Sent',
         'Appointment Letter Accepted','Joined'
       )
-      ORDER BY CandidateID DESC
-    `);
+    `;
+    const params = [];
+    if (isManager && department) {
+      sql += ` AND AppliedDepartment = ?`;
+      params.push(department);
+    }
+    sql += ` ORDER BY CandidateID DESC`;
+
+    const [candidates] = await db.query(sql, params);
 
     for (const c of candidates) {
       const [rounds] = await db.query(`
@@ -106,7 +141,8 @@ exports.getPipelineCandidates = async (req, res) => {
           RoundID, RoundNumber, RoundName, RoundResult,
           InterviewFeedback, TechnicalScore, CommunicationScore,
           AttitudeScore, DomainKnowledgeScore, OverallScore,
-          InterviewDate, InterviewerName, InterviewMode
+          InterviewDate, InterviewerName, InterviewerId,
+          InterviewerDesignation, AdditionalInterviewers, InterviewMode
         FROM interview_rounds
         WHERE CandidateID = ?
         ORDER BY RoundID ASC
@@ -161,10 +197,19 @@ exports.getPipelineCandidates = async (req, res) => {
         c.LatestRoundID    = lastRound.RoundID;
         c.CurrentRoundName = lastRound.RoundName;
         c.EvaluationResult = lastRound.RoundResult || null;
+        // Who is allowed to evaluate this round — feeds the frontend's
+        // isAssignedManager check in InterviewPipeline.jsx.
+        c.AssignedInterviewerId = lastRound.InterviewerId || null;
+        c.AssignedInterviewerName = lastRound.InterviewerName || null;
+        c.AdditionalInterviewers = lastRound.AdditionalInterviewers
+          ? JSON.parse(lastRound.AdditionalInterviewers)
+          : [];
       } else {
         c.LatestRoundID    = null;
         c.CurrentRoundName = null;
         c.EvaluationResult = null;
+        c.AssignedInterviewerId = null;
+        c.AdditionalInterviewers = [];
       }
 
       // ── NextRoundPending ──────────────────────────────────────────────────
@@ -226,48 +271,72 @@ exports.getCandidateProfile = async (req, res) => {
 
 exports.scheduleInterview = async (req, res) => {
   try {
-    const {
+    let {
       CandidateID, RoundName, InterviewDate, InterviewTime,
-      InterviewMode, InterviewerName, InterviewerDesignation,
-      Department, MeetingLink, Location,
+      InterviewMode, InterviewerId, InterviewerName, InterviewerDesignation,
+      Department, MeetingLink, Location, AdditionalInterviewers,
+      ScheduledBy, ScheduledByRole,
     } = req.body;
 
     if (!CandidateID || !RoundName || !InterviewDate || !InterviewTime) {
       return res.status(400).json({ success: false, message: "CandidateID, RoundName, InterviewDate, and InterviewTime are required" });
     }
 
+    const role = (ScheduledByRole || "").toLowerCase();
+    if (role && role !== "hr" && role !== "admin") {
+      return res.status(403).json({ success: false, message: "Only HR can schedule interviews" });
+    }
+
+    // HR-only rounds: ignore interviewer fields
+    const HR_ROUNDS = ["Offer Discussion", "Offer Process"];
+    if (HR_ROUNDS.includes(RoundName)) {
+      InterviewerId = null;
+      InterviewerName = "HR";
+      InterviewerDesignation = "HR";
+      Department = null;
+      AdditionalInterviewers = null;
+    }
+
     const interviewDateTime = `${InterviewDate} ${InterviewTime}:00`;
 
-    // Get next round number
     const [lastRound] = await db.query(
       `SELECT MAX(RoundNumber) AS MaxRound FROM interview_rounds WHERE CandidateID = ?`,
       [CandidateID]
     );
     const nextRoundNumber = (lastRound[0]?.MaxRound || 0) + 1;
 
-    // Insert the new scheduled round (no result yet)
+    let additionalInterviewersJson = null;
+    if (AdditionalInterviewers && !HR_ROUNDS.includes(RoundName)) {
+      try {
+        const parsed = typeof AdditionalInterviewers === "string" ? JSON.parse(AdditionalInterviewers) : AdditionalInterviewers;
+        const cleaned = (Array.isArray(parsed) ? parsed : []).filter(row => row && row.EmployeeID);
+        if (cleaned.length) additionalInterviewersJson = JSON.stringify(cleaned);
+      } catch (e) {
+        console.warn("AdditionalInterviewers parse error:", e.message);
+      }
+    }
+
     await db.query(
       `INSERT INTO interview_rounds (
         CandidateID, RoundNumber, RoundName, InterviewMode, InterviewDate,
-        InterviewerName, InterviewerDesignation, Department, MeetingLink, Location
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        InterviewerName, InterviewerId, InterviewerDesignation,
+        AdditionalInterviewers, Department, MeetingLink, Location
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         CandidateID, nextRoundNumber, RoundName, InterviewMode, interviewDateTime,
-        InterviewerName, InterviewerDesignation || null, Department || null,
+        InterviewerName || null, InterviewerId || null, InterviewerDesignation || null,
+        additionalInterviewersJson, Department || null,
         MeetingLink || null, Location || null,
       ]
     );
 
-    // Update candidate status to reflect the new round
     let newStatus = "Interview Scheduled";
     if (RoundName === "Offer Discussion") newStatus = "Offer Discussion";
     else if (RoundName === "Offer Process") newStatus = "Offer Process";
-    else if (RoundName === "Management Interview") newStatus = "Interview Scheduled";
-    else if (RoundName === "Domain Interview") newStatus = "Interview Scheduled";
 
     await db.query(
-      `UPDATE interview_candidates SET CandidateStatus = ? WHERE CandidateID = ?`,
-      [newStatus, CandidateID]
+      `UPDATE interview_candidates SET CandidateStatus = ?, AssignedInterviewerId = ? WHERE CandidateID = ?`,
+      [newStatus, InterviewerId || null, CandidateID]
     );
 
     res.json({ success: true, message: "Interview scheduled successfully" });
@@ -287,11 +356,28 @@ exports.updateRoundOutcome = async (req, res) => {
       TechnicalScore, CommunicationScore, AttitudeScore, DomainKnowledgeScore,
       Strengths, Weaknesses, InterviewFeedback, OverallScore,
       OfferCTC, OfferedDesignation, OfferedDepartment,
-      ReportingManager, JoiningDate, Remarks,
+      ReportingManager, JoiningDate, Remarks, Comments,
+      EvaluatedBy, EvaluatedByRole,
     } = req.body;
 
-    // ── Mark as Selected (from Offer Process checklist) ────────────────────
+    const role = (EvaluatedByRole || "").toLowerCase();
+    const isHr = role === "hr" || role === "admin";
+    const isManagerRole = role === "manager";
+
+
+    
+    if (role === "lead") {
+      await conn.rollback();
+      return res.status(403).json({ success: false, message: "Leads have read-only access" });
+    }
+
+    // ── Mark as Selected (from Offer Process checklist) — HR/admin only ───
     if (CandidateStatus === "Selected") {
+      if (!isHr) {
+        await conn.rollback();
+        return res.status(403).json({ success: false, message: "Only HR can mark a candidate as Selected" });
+      }
+
       await conn.query(
         `UPDATE interview_candidates SET CandidateStatus = 'Selected' WHERE CandidateID = ?`,
         [CandidateID]
@@ -325,12 +411,72 @@ exports.updateRoundOutcome = async (req, res) => {
         );
       }
 
+      if (Comments && Comments.trim()) {
+        await conn.query(
+          `INSERT INTO candidate_comments (CandidateID, CommentText, CommentedBy, CommentedByRole)
+           VALUES (?, ?, ?, ?)`,
+          [CandidateID, Comments.trim(), EvaluatedBy || null, EvaluatedByRole || null]
+        );
+      }
       await conn.commit();
       const [updated] = await conn.query(`SELECT * FROM interview_candidates WHERE CandidateID = ?`, [CandidateID]);
       return res.json({ success: true, message: "Candidate marked as Selected", candidate: updated[0] });
     }
 
-    // ── Regular round evaluation ────────────────────────────────────────────
+    // ── Regular round evaluation — figure out who's allowed first ──────────
+    if (!RoundID) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: "RoundID is required" });
+    }
+
+    const [roundRow] = await conn.query(
+      `SELECT RoundName, InterviewerId FROM interview_rounds WHERE RoundID = ?`, [RoundID]
+    );
+    if (!roundRow.length) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, message: "Interview round not found" });
+    }
+    const evaluatedRoundName = roundRow[0].RoundName;
+    const assignedInterviewerId = roundRow[0].InterviewerId;
+    console.log("========== UPDATE OUTCOME ==========");
+console.log("Round:", evaluatedRoundName);
+console.log("Assigned:", assignedInterviewerId, typeof assignedInterviewerId);
+console.log("EvaluatedBy:", EvaluatedBy, typeof EvaluatedBy);
+console.log("Role:", EvaluatedByRole);
+console.log("====================================");
+
+    if (MANAGER_EVALUATED_ROUNDS.includes(evaluatedRoundName)) {
+      // Domain / Management Interview: ONLY the assigned manager may
+      // evaluate. HR scheduled it, but does not submit the outcome —
+      // this mirrors the "Interviewer assigned by the respective
+      // Interview Manager" requirement.
+      if (!isManagerRole || !assignedInterviewerId || String(assignedInterviewerId) !== String(EvaluatedBy)) {
+        await conn.rollback();
+        return res.status(403).json({
+          success: false,
+          message: isHr
+            ? "Domain and Management interviews are evaluated by the assigned interviewer, not HR."
+            : "You can only evaluate interviews assigned to you.",
+        });
+      }
+    } else {
+      // Offer Discussion / Offer Process (and anything else): HR/admin only.
+      if (!isHr) {
+        await conn.rollback();
+        return res.status(403).json({ success: false, message: "Only HR can process this stage" });
+      }
+    }
+
+    const saveComment = async () => {
+      if (Comments && Comments.trim()) {
+        await conn.query(
+          `INSERT INTO candidate_comments (CandidateID, CommentText, CommentedBy, CommentedByRole)
+           VALUES (?, ?, ?, ?)`,
+          [CandidateID, Comments.trim(), EvaluatedBy || null, EvaluatedByRole || null]
+        );
+      }
+    };
+
     const dbResult = RoundResult === "Pass" ? "Pass"
                    : RoundResult === "Fail" ? "Fail"
                    : "Hold";
@@ -352,38 +498,59 @@ exports.updateRoundOutcome = async (req, res) => {
       ]
     );
 
-    // Get the round name so we know what was just evaluated
-    const [roundRow] = await conn.query(
-      `SELECT RoundName FROM interview_rounds WHERE RoundID = ?`, [RoundID]
-    );
-    const evaluatedRoundName = roundRow[0]?.RoundName;
-
     // Determine new candidate status
     let newCandidateStatus;
 
-    if (dbResult === "Fail") {
-      newCandidateStatus = "Rejected";
-    } else if (dbResult === "Hold") {
-      newCandidateStatus = "On Hold";
-    } else {
-      // Pass — set status to reflect "waiting for next round schedule"
-      // We do NOT insert a new round here. The frontend Schedule button does that.
-      if (evaluatedRoundName === "Offer Process") {
-        newCandidateStatus = "Selected";
-      } else if (evaluatedRoundName === "Offer Discussion") {
-        // Passed offer discussion → waiting for offer process to be scheduled
+switch (dbResult) {
+
+    case "Fail":
+        newCandidateStatus = "Rejected";
+        break;
+
+    case "Hold":
+        newCandidateStatus = "On Hold";
+        break;
+
+    case "Pass":
+
+        switch (evaluatedRoundName) {
+
+            case "Domain Interview":
+                // Waiting for HR to schedule Management Interview
+                newCandidateStatus = "Interview Scheduled";
+                break;
+
+            case "Management Interview":
+                // Waiting for HR to schedule Offer Discussion
+                newCandidateStatus = "Interview Scheduled";
+                break;
+
+            case "Offer Discussion":
+                // Waiting for HR to schedule Offer Process
+                newCandidateStatus = "Interview Scheduled";
+                break;
+
+            case "Offer Process":
+                // Final stage
+                newCandidateStatus = "Selected";
+                break;
+
+            default:
+                newCandidateStatus = "Interview Scheduled";
+        }
+
+        break;
+
+    default:
         newCandidateStatus = "Interview Scheduled";
-      } else {
-        // Domain or Management interview passed → waiting for next round schedule
-        newCandidateStatus = "Interview Scheduled";
-      }
-    }
+}
 
     await conn.query(
       `UPDATE interview_candidates SET CandidateStatus = ? WHERE CandidateID = ?`,
       [newCandidateStatus, CandidateID]
     );
 
+    await saveComment();
     await conn.commit();
 
     const [updatedRound]     = await conn.query(`SELECT * FROM interview_rounds WHERE RoundID = ?`, [RoundID]);
@@ -414,12 +581,19 @@ exports.updateRoundOutcome = async (req, res) => {
 };
 
 // ─── Update Candidate Status ───────────────────────────────────────────────────
+// Used for the Applied → resume-screening decision. HR/admin only.
 exports.updateCandidateStatus = async (req, res) => {
   try {
-    const { CandidateID, CandidateStatus } = req.body;
+    const { CandidateID, CandidateStatus, Comments, UpdatedBy, UpdatedByRole } = req.body;
     if (!CandidateID || !CandidateStatus) {
       return res.status(400).json({ success: false, message: "CandidateID and CandidateStatus are required" });
     }
+
+    const role = (UpdatedByRole || "").toLowerCase();
+    if (role && role !== "hr" && role !== "admin") {
+      return res.status(403).json({ success: false, message: "Only HR can review resumes / update this status" });
+    }
+
     const [candidate] = await db.query(
       `SELECT CandidateID FROM interview_candidates WHERE CandidateID = ?`, [CandidateID]
     );
@@ -429,7 +603,53 @@ exports.updateCandidateStatus = async (req, res) => {
       `UPDATE interview_candidates SET CandidateStatus = ? WHERE CandidateID = ?`,
       [CandidateStatus, CandidateID]
     );
+
+    if (Comments && Comments.trim()) {
+      await db.query(
+        `INSERT INTO candidate_comments (CandidateID, CommentText, CommentedBy, CommentedByRole)
+         VALUES (?, ?, ?, ?)`,
+        [CandidateID, Comments.trim(), UpdatedBy || null, UpdatedByRole || null]
+      );
+    }
+
     res.json({ success: true, message: "Status updated" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── Pipeline Comments ──────────────────────────────────────────────────────
+// A running remarks log per candidate (see migration_recruitment_enhancements.sql
+// for the `candidate_comments` table). HR, managers and leads can all add
+// comments — this is meant for shared visibility across the hiring team.
+exports.getCandidateComments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await db.query(
+      `SELECT * FROM candidate_comments WHERE CandidateID = ? ORDER BY CreatedDate ASC`,
+      [id]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.addCandidateComment = async (req, res) => {
+  try {
+    const { CandidateID, CommentText, CommentedBy, CommentedByName, CommentedByRole } = req.body;
+    if (!CandidateID || !CommentText || !CommentText.trim()) {
+      return res.status(400).json({ success: false, message: "CandidateID and CommentText are required" });
+    }
+    const [result] = await db.query(
+      `INSERT INTO candidate_comments (CandidateID, CommentText, CommentedBy, CommentedByName, CommentedByRole)
+       VALUES (?, ?, ?, ?, ?)`,
+      [CandidateID, CommentText.trim(), CommentedBy || null, CommentedByName || null, CommentedByRole || null]
+    );
+    const [row] = await db.query(`SELECT * FROM candidate_comments WHERE CommentID = ?`, [result.insertId]);
+    res.status(201).json({ success: true, comment: row[0] });
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, message: error.message });
@@ -498,7 +718,7 @@ exports.convertToEmployee = async (req, res) => {
       [CandidateID]
     );
 
-    const designation = offerDetails[0]?.OfferedDesignation || c.AppliedDesignation;
+    const designation = c.AppliedDesignation;
     const department  = offerDetails[0]?.OfferedDepartment  || c.AppliedDepartment;
     const joiningDate = offerDetails[0]?.JoiningDate        || today;
 
@@ -520,7 +740,7 @@ exports.convertToEmployee = async (req, res) => {
         c.FirstName, c.MiddleName || "", c.LastName, "", "",
         c.CurrentAddress || "", c.CurrentAddress || "", c.EmailId, md5("123456"), c.CountryCode1 || "+91",
         c.MobileNo || "", c.CountryCode2 || "", c.AlternateMobileNo || "", "",
-        "", c.MaritalStatus || "", c.Gender || "", c.DateOfBirth || "", c.Nationality || "",
+        c.EmergencyContactNo || "", c.MaritalStatus || "", c.Gender || "", c.DateOfBirth || "", c.Nationality || "",
         "", "", "", c.Photo || null, "",
         "", "", "", "", "", "", "",
         "", "", joiningDate, "", "",

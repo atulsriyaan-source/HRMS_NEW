@@ -39,9 +39,10 @@ const ManagerLayout = () => {
     { label: 'Timesheet Approvals', path: '/manager/timesheet', icon: '📋' },
     { label: 'Resignations', path: '/manager/resignations', icon: '👩‍💼' },
     { label: 'Team Leaves', path: '/manager/leaves', icon: '📅' },
-    { label: 'My Profile', path: '/manager/profile', icon: '👩‍💼' },
+    // { label: 'My Profile', path: '/manager/profile', icon: '👩‍💼' },
+    { label: 'Candidates', path: '/manager/Recruitment/candidates', icon: '🧑‍💼' },
+    { label: 'Interview Pipeline', path: '/manager/Recruitment/interviews', icon: '🎯' },
     { label: "Announcements", path: "/manager/announcements", icon: <FiStar />  },
-    
   ];
 
   return (

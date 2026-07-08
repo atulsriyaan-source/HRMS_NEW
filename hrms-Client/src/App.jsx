@@ -33,6 +33,7 @@ import TimeSheetMaster from "./pages/employee/TimeSheet";
 import EmployeeRequests from "./pages/employee/Request";
 
 // manager
+import ManagerDashboard from "./pages/manager/Dashboard";
 import ManagerTimesheetReview from "./pages/manager/TimeSheets";
 import ManagerResignations from "./pages/manager/Resignations";
 
@@ -115,11 +116,14 @@ function App() {
           }
         >
           {/* URL resolves perfectly to: /manager/timesheet */}
+          <Route path="dashboard" element={<ManagerDashboard />} />
           <Route path="timesheet" element={<ManagerTimesheetReview />} />
           <Route path="resignations" element={<ManagerResignations />} />
           <Route path="leaves" element={<EmployeeLeaves />} />
           <Route path="announcements" element={<Announcements />} />
           <Route path="announcements/:id" element={<Announcements />} />
+          <Route path="Recruitment/candidates" element={<Candidates />} />
+          <Route path="Recruitment/interviews" element={<InterviewPipeline />} />
         </Route>
 
         <Route 
@@ -131,6 +135,8 @@ function App() {
           }
         >
           <Route path="timesheet" element={<LeaderTimesheet />} />
+          <Route path="Recruitment/candidates" element={<Candidates />} />
+          <Route path="Recruitment/interviews" element={<InterviewPipeline />} />
         </Route>
 
       </Routes>

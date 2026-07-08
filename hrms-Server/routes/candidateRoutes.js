@@ -66,6 +66,17 @@ router.post(
   candidateController.updateCandidateStatus
 );
 
+// ── Pipeline comments/remarks ──────────────────────────────────────────────
+router.get(
+  "/comments/:id",
+  candidateController.getCandidateComments
+);
+
+router.post(
+  "/comments/add",
+  candidateController.addCandidateComment
+);
+
 
 router.post(
   "/convert-employee",

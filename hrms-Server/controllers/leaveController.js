@@ -1,91 +1,145 @@
 const db = require("../config/db");
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
-const CASUAL_TOTAL   = 7;
-const SICK_TOTAL     = 7;
-const EARNED_TOTAL   = 14;
-const FLEXI_TOTAL    = 2;
-const MATERNITY_TOTAL = 180;
-
 // ─── Helper Functions ──────────────────────────────────────────────────────────
 
 const floorInt = (val) => Math.floor(Number(val || 0));
 const roundHalf = (val) => Math.round(Number(val) * 2) / 2;
+
+async function getLeavePolicy() {
+  const [rows] = await db.query(
+    `SELECT * FROM leave_policy ORDER BY PolicyID DESC LIMIT 1`
+  );
+  if (!rows.length) {
+    throw new Error("Leave policy not configured.");
+  }
+  return rows[0];
+}
 
 async function ensureBalanceRow(employeeId, year, gender) {
   const [rows] = await db.query(
     `SELECT id FROM leave_balance WHERE EmployeeId = ? AND Year = ?`,
     [employeeId, year]
   );
-  if (!rows.length) {
-    await db.query(
-      `INSERT INTO leave_balance
-         (EmployeeId, Year, CasualLeave, SickLeave, EarnedLeave, FlexiHoliday, MaternityLeave)
-       VALUES (?,?,?,?,?,?,?)`,
-      [
-        employeeId, year,
-        CASUAL_TOTAL, SICK_TOTAL, 0, FLEXI_TOTAL,
-        gender?.toLowerCase() === "female" ? MATERNITY_TOTAL : 0,
-      ]
-    );
-  }
+  if (rows.length) return;
+
+  const policy = await getLeavePolicy();
+  await db.query(
+    `INSERT INTO leave_balance
+    (EmployeeId, Year, CasualLeave, SickLeave, EarnedLeave, FlexiHoliday, MaternityLeave)
+    VALUES (?,?,?,?,?,?,?)`,
+    [
+      employeeId, year,
+      policy.CasualLeave,
+      policy.SickLeave,
+      0,
+      policy.FlexiHoliday,
+      gender?.toLowerCase() === "female" ? policy.MaternityLeave : 0
+    ]
+  );
 }
 
 /**
- * Earned leave accrual — credited monthly
- * Rule: if employee took NO Casual or Sick leave in previous month,
- * they earn 1 day (floor of ~1.17)
+ * Earned leave accrual — credited quarterly based on unused Casual and Sick leaves
+ * 
+ * Rule: For each quarter, unused Casual and Sick leave converts to Earned Leave.
+ * Quarterly allocation: Casual 7/4 = 1.75, Sick 7/4 = 1.75
+ * Total possible earned per quarter: 3.5 days
+ * Maximum earned: 14 days (can carry forward)
  */
 async function calculateAndCreditEarnedLeave(employeeId) {
-  const now        = new Date();
-  const thisMonth  = now.getMonth() + 1;
-  const thisYear   = now.getFullYear();
-  const creditMonth = thisMonth === 1 ? 12 : thisMonth - 1;
-  const creditYear  = thisMonth === 1 ? thisYear - 1 : thisYear;
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth() + 1;
+  const quarter = Math.ceil(month / 3);
 
-  // Already credited this month?
+  // Nothing to credit in Q1
+  if (quarter === 1) return;
+
+  // Credit previous completed quarter
+  const creditQuarter = quarter - 1;
+
+  // Already credited?
   const [already] = await db.query(
-    `SELECT id FROM availed_leaves
-     WHERE EmployeeId = ? AND Month = ? AND Year = ? AND LeaveType = 'EarnedCredit'`,
-    [employeeId, creditMonth, creditYear]
+    `SELECT EarnedLogID FROM earned_leave_log
+     WHERE EmployeeID = ? AND Year = ? AND Quarter = ?`,
+    [employeeId, year, creditQuarter]
   );
   if (already.length) return;
 
-  // Check if employee took Casual or Sick leave last month
-  const [taken] = await db.query(
-    `SELECT SUM(Days) as totalDays FROM leave_requests
-     WHERE EmployeeID = ?
-       AND LeaveType IN ('Casual','Sick')
-       AND Status = 'Approved'
-       AND MONTH(FromDate) = ? AND YEAR(FromDate) = ?`,
-    [employeeId, creditMonth, creditYear]
+  // Get leave policy
+  const [policyRows] = await db.query(
+    `SELECT CasualLeave, SickLeave, EarnedLeave
+     FROM leave_policy ORDER BY PolicyID DESC LIMIT 1`
   );
   
-  if (Number(taken[0]?.totalDays || 0) > 0) return;
+  const yearlyCasual = Number(policyRows[0]?.CasualLeave || 7);
+  const yearlySick = Number(policyRows[0]?.SickLeave || 7);
+  const yearlyLimit = Number(policyRows[0]?.EarnedLeave || 14);
+  
+  // Quarterly allocation
+  const quarterlyCasual = yearlyCasual / 4; // 1.75
+  const quarterlySick = yearlySick / 4; // 1.75
 
-  // Credit 1 day
-  const year = thisYear;
-  const [bal] = await db.query(
+  // Quarter Month Range
+  let startMonth = 1, endMonth = 3;
+  if (creditQuarter === 2) { startMonth = 4; endMonth = 6; }
+  if (creditQuarter === 3) { startMonth = 7; endMonth = 9; }
+  if (creditQuarter === 4) { startMonth = 10; endMonth = 12; }
+
+  // Get Casual and Sick leaves taken in the quarter (Approved ones)
+  const [taken] = await db.query(
+    `SELECT LeaveType, SUM(Days) as total
+     FROM leave_requests
+     WHERE EmployeeID = ?
+     AND Status = 'Approved'
+     AND LeaveType IN ('Casual','Sick')
+     AND YEAR(FromDate) = ?
+     AND MONTH(FromDate) BETWEEN ? AND ?
+     GROUP BY LeaveType`,
+    [employeeId, year, startMonth, endMonth]
+  );
+
+  let usedCasual = 0;
+  let usedSick = 0;
+  taken.forEach(row => {
+    if (row.LeaveType === 'Casual') usedCasual = Number(row.total || 0);
+    if (row.LeaveType === 'Sick') usedSick = Number(row.total || 0);
+  });
+
+  // Calculate unused days that convert to earned
+  const unusedCasual = Math.max(0, quarterlyCasual - usedCasual);
+  const unusedSick = Math.max(0, quarterlySick - usedSick);
+  const earnedToCredit = unusedCasual + unusedSick;
+
+  if (earnedToCredit <= 0) return;
+
+  // Get current earned balance
+  const [balanceRows] = await db.query(
     `SELECT EarnedLeave FROM leave_balance WHERE EmployeeId = ? AND Year = ?`,
     [employeeId, year]
   );
-  const current = floorInt(bal[0]?.EarnedLeave || 0);
-  if (current >= EARNED_TOTAL) return;
+  const currentEarned = Number(balanceRows[0]?.EarnedLeave || 0);
 
-  const toAdd = Math.min(1, EARNED_TOTAL - current);
+  // Don't exceed yearly limit
+  const credit = Math.min(earnedToCredit, yearlyLimit - currentEarned);
+  if (credit <= 0) return;
 
+  // Credit Earned Leave
   await db.query(
-    `UPDATE leave_balance SET EarnedLeave = EarnedLeave + ? WHERE EmployeeId = ? AND Year = ?`,
-    [toAdd, employeeId, year]
+    `UPDATE leave_balance 
+     SET EarnedLeave = EarnedLeave + ?
+     WHERE EmployeeId = ? AND Year = ?`,
+    [credit, employeeId, year]
   );
+
+  // Log the credit
   await db.query(
-    `INSERT INTO availed_leaves (EmployeeId, Month, Year, LeaveType, availed_leaves)
-     VALUES (?,?,?,'EarnedCredit',?)`,
-    [employeeId, creditMonth, creditYear, -toAdd]
+    `INSERT INTO earned_leave_log (EmployeeID, Year, Quarter, EarnedDays)
+     VALUES (?,?,?,?)`,
+    [employeeId, year, creditQuarter, credit]
   );
 }
 
-// ─── Get Employee Role ──────────────────────────────────────────────────────────
 async function getUserRole(employeeId) {
   const [rows] = await db.query(
     `SELECT role FROM employee WHERE EmployeeID = ?`,
@@ -94,169 +148,177 @@ async function getUserRole(employeeId) {
   return rows[0]?.role || 'employee';
 }
 
-// ─── Get Approver Chain ────────────────────────────────────────────────────────
-async function getApprovalChain(employeeId, days, leaveType) {
-  // All leaves go through Manager first
-  const chain = ['manager'];
-  
-  // Maternity, LWP, and >3 days go to HR too
-  if (['Maternity', 'LWP'].includes(leaveType) || days > 3) {
-    chain.push('hr');
-  }
-  
-  // HR leave requests go to Admin
-  const [emp] = await db.query(
-    `SELECT role FROM employee WHERE EmployeeID = ?`,
-    [employeeId]
-  );
-  if (emp[0]?.role === 'hr') {
-    chain.push('admin');
-  }
-  
-  return chain;
-}
-
 // ─── Apply Leave ───────────────────────────────────────────────────────────────
 exports.applyLeave = async (req, res) => {
+  const conn = await db.getConnection();
   try {
+    await conn.beginTransaction();
+
     const employeeId = req.user.id;
     const userRole = await getUserRole(employeeId);
-    
-    const {
+
+    let {
       leaveType, halfDay, fromDate, toDate, reason,
-      flexiSelected, emergencyContact, contactNumber, handoverTo,
+      flexiSelected, emergencyContact, contactNumber, handoverTo
     } = req.body;
 
     const attachment = req.file ? req.file.filename : null;
 
     if (!leaveType || !fromDate || !toDate || !reason) {
+      await conn.rollback();
       return res.status(400).json({ success: false, message: "Required fields missing" });
     }
 
     const start = new Date(fromDate);
-    const end   = new Date(toDate);
+    const end = new Date(toDate);
     if (end < start) {
-      return res.status(400).json({ success: false, message: "To date must be after from date" });
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: "To date must be after From date" });
     }
 
     let days = Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1;
-    if (halfDay && halfDay !== "Full") days = 0.5;
-
-    // Sick leave >2 days requires attachment
-    if (leaveType === "Sick" && days > 2 && !attachment) {
-      return res.status(400).json({
-        success: false,
-        message: "Doctor's prescription required for sick leave exceeding 2 days",
-      });
+    if (halfDay && halfDay !== "Full") {
+      days = 0.5;
     }
 
-    // Check balance
+    // Sick Leave Attachment
+    if (leaveType === "Sick" && days > 2 && !attachment) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: "Doctor's prescription required for Sick Leave exceeding 2 days." });
+    }
+
     const year = start.getFullYear();
-    const [empRows] = await db.query(
+
+    const [empRows] = await conn.query(
       `SELECT Gender FROM employee WHERE EmployeeID = ?`,
       [employeeId]
     );
     const gender = empRows[0]?.Gender || "Male";
+
+    // Credit earned leave before checking balance
+    try {
+      await calculateAndCreditEarnedLeave(employeeId);
+    } catch (e) {
+      console.error("Earned leave calculation error:", e.message);
+    }
+
     await ensureBalanceRow(employeeId, year, gender);
 
-    // Get current balance
-    const [balRows] = await db.query(
+    const [balRows] = await conn.query(
       `SELECT * FROM leave_balance WHERE EmployeeId = ? AND Year = ?`,
       [employeeId, year]
     );
     const bal = balRows[0];
 
-    // Get used leaves for this year
-    const [usedRows] = await db.query(
-      `SELECT LeaveType, SUM(Days) as total 
-       FROM leave_requests 
-       WHERE EmployeeID = ? AND Status = 'Approved' AND YEAR(FromDate) = ?
-       GROUP BY LeaveType`,
-      [employeeId, year]
-    );
-
-    const usedMap = {};
-    usedRows.forEach(row => {
-      usedMap[row.LeaveType] = Number(row.total) || 0;
-    });
-
+    // Check balance
     const colMap = {
-      Casual:    "CasualLeave",
-      Sick:      "SickLeave",
-      Earned:    "EarnedLeave",
-      Flexi:     "FlexiHoliday",
-      Maternity: "MaternityLeave",
-      LWP:       null,
+      Casual: "CasualLeave", Sick: "SickLeave", Earned: "EarnedLeave",
+      Flexi: "FlexiHoliday", Maternity: "MaternityLeave", LWP: null
     };
-    const col = colMap[leaveType];
-    
-    // Calculate remaining balance
-    let remaining = 0;
-    if (col) {
-      const total = bal?.[col] || 0;
-      const used = usedMap[leaveType] || 0;
-      remaining = Math.max(0, total - used);
-    }
-    
-    if (col && remaining < days && leaveType !== "Maternity") {
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient ${leaveType} leave balance. Available: ${Math.floor(remaining)} days`,
-      });
-    }
 
-    // Determine approval chain
-    const approvalChain = await getApprovalChain(employeeId, days, leaveType);
-    
-    // Initial status - Pending
-    let status = 'Pending';
-    let approvalLevel = 1;
-    
-    // If no manager approval needed (HR applying) or auto-forward to HR
-    if (userRole === 'hr' || ['Maternity', 'LWP'].includes(leaveType) || days > 3) {
-      if (userRole === 'hr') {
-        // HR leaves go directly to admin
-        status = 'Pending';
-        approvalLevel = 1;
-      } else {
-        // Employee leaves >3 days or special types go to HR
-        status = 'Forwarded to HR';
-        approvalLevel = 2;
+    const col = colMap[leaveType];
+    if (col) {
+      const remaining = Number(bal[col] || 0);
+      if (remaining < days && leaveType !== "Maternity") {
+        await conn.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient ${leaveType} balance. Available: ${remaining} days`
+        });
       }
     }
 
-    const [result] = await db.query(
+    // Flexi Holiday Validation
+    let flexiHolidayID = null;
+    let status = "Pending";
+    let isFlexiAutoApproved = false;
+
+    if (leaveType === "Flexi") {
+      if (!flexiSelected) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, message: "Please select a Flexi Holiday." });
+      }
+
+      if (fromDate !== toDate) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, message: "Flexi Holiday must be a single day." });
+      }
+
+      days = 1;
+      halfDay = "Full";
+
+      const [holiday] = await conn.query(
+        `SELECT * FROM flexi_holidays WHERE FlexiHolidayID = ? AND Status = 'Active'`,
+        [flexiSelected]
+      );
+      if (!holiday.length) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, message: "Invalid or inactive Flexi Holiday selected." });
+      }
+
+      // Check if already used
+      const [already] = await conn.query(
+        `SELECT LeaveID FROM leave_requests
+         WHERE EmployeeID = ? AND FlexiHolidayID = ?
+         AND Status IN ('Approved', 'Pending')`,
+        [employeeId, flexiSelected]
+      );
+      if (already.length) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, message: "You have already selected this Flexi Holiday." });
+      }
+
+      flexiHolidayID = flexiSelected;
+      
+      // Flexi is auto-approved
+      status = "Approved";
+      isFlexiAutoApproved = true;
+    }
+
+    // Insert leave request
+    const [result] = await conn.query(
       `INSERT INTO leave_requests
-         (EmployeeID, LeaveType, HalfDay, FromDate, ToDate, Days, Reason,
-          Attachment, FlexiHoliday, EmergencyContact, ContactNumber, HandoverTo, 
-          Status, ApprovalLevel)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      (EmployeeID, LeaveType, HalfDay, FromDate, ToDate, Days, Reason,
+       Attachment, FlexiHolidayID, EmergencyContact, ContactNumber, HandoverTo,
+       Status, CreatedAt, ApprovedAt)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        employeeId, leaveType, halfDay || "Full", fromDate, toDate,
-        days, reason, attachment, flexiSelected || null,
+        employeeId, leaveType, halfDay || "Full",
+        fromDate, toDate, days, reason,
+        attachment, flexiHolidayID,
         emergencyContact || null, contactNumber || null,
-        handoverTo || null, status, approvalLevel,
+        handoverTo || null,
+        status,
+        new Date(),
+        isFlexiAutoApproved ? new Date() : null
       ]
     );
 
-    // If this is a flexi holiday, save the selection
-    if (leaveType === 'Flexi' && flexiSelected) {
-      await db.query(
-        `INSERT INTO holiday_submissions (EmployeeId, Year, FlexiHoliday)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE SelectedDate = CURRENT_TIMESTAMP`,
-        [employeeId, year, flexiSelected]
+    // For Flexi, deduct balance immediately
+    if (leaveType === "Flexi" && isFlexiAutoApproved) {
+      await conn.query(
+        `UPDATE leave_balance SET FlexiHoliday = FlexiHoliday - 1
+         WHERE EmployeeId = ? AND Year = ?`,
+        [employeeId, year]
       );
     }
 
-    res.json({ 
-      success: true, 
-      message: "Leave application submitted successfully",
-      approvalChain 
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: isFlexiAutoApproved
+        ? "Flexi Holiday approved automatically."
+        : "Leave application submitted successfully.",
+      autoApproved: isFlexiAutoApproved
     });
+
   } catch (err) {
-    console.error("Apply leave error:", err);
+    await conn.rollback();
+    console.error(err);
     res.status(500).json({ success: false, message: err.message });
+  } finally {
+    conn.release();
   }
 };
 
@@ -264,34 +326,32 @@ exports.applyLeave = async (req, res) => {
 exports.getMyRequests = async (req, res) => {
   try {
     const employeeId = req.user.id;
-    const [rows] = await db.query(
-      `SELECT lr.*,
-              CONCAT(e.FirstName,' ',e.LastName) AS approvedByName,
-              e2.FirstName as managerName
-       FROM leave_requests lr
-       LEFT JOIN employee e ON e.EmployeeID = lr.ApprovedBy
-       LEFT JOIN employee e2 ON e2.EmployeeID = lr.ApprovedBy
-       WHERE lr.EmployeeID = ?
-       ORDER BY lr.LeaveID DESC`,
-      [employeeId]
-    );
+    const [rows] = await db.query(`
+      SELECT lr.*,
+             fh.HolidayName,
+             CONCAT(a.FirstName,' ',a.LastName) AS approvedByName
+      FROM leave_requests lr
+      LEFT JOIN employee a ON a.EmployeeID = lr.ApprovedBy
+      LEFT JOIN flexi_holidays fh ON fh.FlexiHolidayID = lr.FlexiHolidayID
+      WHERE lr.EmployeeID = ?
+      ORDER BY lr.LeaveID DESC
+    `, [employeeId]);
 
     const mapped = rows.map(r => ({
-      id:              r.LeaveID,
-      leaveType:       r.LeaveType,
-      halfDay:         r.HalfDay,
-      fromDate:        r.FromDate,
-      toDate:          r.ToDate,
-      days:            r.Days,
-      reason:          r.Reason,
-      status:          r.Status,
-      appliedOn:       r.CreatedAt,
-      approvedBy:      r.approvedByName || null,
-      managerApproved: r.ManagerApproved === 1,
-      hrApproved:      r.HRApproved === 1,
-      attachment:      r.Attachment,
-      flexiHoliday:    r.FlexiHoliday,
-      approvalLevel:   r.ApprovalLevel,
+      id: r.LeaveID,
+      leaveType: r.LeaveType,
+      halfDay: r.HalfDay,
+      fromDate: r.FromDate,
+      toDate: r.ToDate,
+      days: r.Days,
+      reason: r.Reason,
+      status: r.Status,
+      appliedOn: r.CreatedAt,
+      approvedOn: r.ApprovedAt,
+      approvedBy: r.approvedByName,
+      attachment: r.Attachment,
+      flexiHolidayID: r.FlexiHolidayID,
+      flexiHolidayName: r.HolidayName
     }));
 
     res.json(mapped);
@@ -313,7 +373,12 @@ exports.getBalance = async (req, res) => {
     );
     const gender = empRows[0]?.Gender || "Male";
 
-    try { await calculateAndCreditEarnedLeave(employeeId); } catch (e) { /* non-fatal */ }
+    // Credit earned leave if eligible
+    try {
+      await calculateAndCreditEarnedLeave(employeeId);
+    } catch (e) {
+      console.error("Earned leave calculation:", e.message);
+    }
 
     await ensureBalanceRow(employeeId, year, gender);
 
@@ -321,62 +386,40 @@ exports.getBalance = async (req, res) => {
       `SELECT * FROM leave_balance WHERE EmployeeId = ? AND Year = ?`,
       [employeeId, year]
     );
-    const bal = balRows[0];
 
-    // Get used leaves for this year (only approved leaves)
-    const [usedRows] = await db.query(
-      `SELECT LeaveType, SUM(Days) as total 
-       FROM leave_requests 
-       WHERE EmployeeID = ? AND Status = 'Approved' AND YEAR(FromDate) = ?
-       GROUP BY LeaveType`,
-      [employeeId, year]
-    );
-
-    // Create a map of used leaves
-    const usedMap = {};
-    usedRows.forEach(row => {
-      usedMap[row.LeaveType] = Number(row.total) || 0;
-    });
-
-    // Calculate remaining balances
-    const response = {
-      Casual: Math.max(0, Math.floor((bal.CasualLeave || CASUAL_TOTAL) - (usedMap.Casual || 0))),
-      Sick: Math.max(0, Math.floor((bal.SickLeave || SICK_TOTAL) - (usedMap.Sick || 0))),
-      Earned: Math.max(0, Math.floor((bal.EarnedLeave || 0) - (usedMap.Earned || 0))),
-      Flexi: Math.max(0, Math.floor((bal.FlexiHoliday || FLEXI_TOTAL) - (usedMap.Flexi || 0))),
-    };
-
-    if (gender?.toLowerCase() === "female") {
-      response.Maternity = Math.max(0, Math.floor((bal.MaternityLeave || MATERNITY_TOTAL) - (usedMap.Maternity || 0)));
+    if (!balRows.length) {
+      return res.status(404).json({ success: false, message: "Leave balance not found." });
     }
 
-    console.log("Balance response for", employeeId, ":", response);
+    const bal = balRows[0];
+    const response = {
+      Casual: Number(bal.CasualLeave || 0),
+      Sick: Number(bal.SickLeave || 0),
+      Earned: Number(bal.EarnedLeave || 0),
+      Flexi: Number(bal.FlexiHoliday || 0),
+    };
 
-    res.json(response);
+    if (gender.toLowerCase() === "female") {
+      response.Maternity = Number(bal.MaternityLeave || 0);
+    }
+
+    res.json({ success: true, balance: response });
+
   } catch (err) {
     console.error("Get balance error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// ─── Pending Approvals (Manager/HR view) ─────────────────────────────────────────
+// ─── Pending Approvals ────────────────────────────────────────────────────────
 exports.getPendingApprovals = async (req, res) => {
   try {
-    // Check if req.user exists
     if (!req.user) {
-      console.error("req.user is undefined - verifyToken middleware may not be running");
-      return res.status(401).json({ 
-        success: false, 
-        message: "Unauthorized - Please login again" 
-      });
+      return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const managerId = req.user.id;
+    const userId = req.user.id;
     const userRole = req.user.role || 'employee';
-
-    console.log("=== getPendingApprovals ===");
-    console.log("User ID:", managerId);
-    console.log("User Role:", userRole);
 
     let query = `
       SELECT lr.*,
@@ -386,26 +429,23 @@ exports.getPendingApprovals = async (req, res) => {
              e.DirectSupervisor
       FROM leave_requests lr
       JOIN employee e ON e.EmployeeID = lr.EmployeeID
-      WHERE lr.Status IN ('Pending', 'Forwarded to HR')
+      WHERE lr.Status = 'Pending'
     `;
 
     const params = [];
 
     if (userRole === 'manager') {
-      console.log("Manager viewing all pending requests");
-    } else if (userRole === 'hr') {
-      console.log("HR viewing all pending requests");
+      query += ` AND e.DirectSupervisor = ?`;
+      params.push(userId);
     }
-    // Admin sees everything
 
-    query += ` ORDER BY lr.LeaveID DESC`;
+    query += ` ORDER BY lr.CreatedAt DESC`;
 
     const [rows] = await db.query(query, params);
-    
-    console.log(`Found ${rows.length} pending requests`);
 
     const mapped = rows.map(r => ({
       id: r.LeaveID,
+      employeeId: r.EmployeeID,
       employeeName: r.employeeName || "Unknown",
       department: r.department,
       leaveType: r.LeaveType,
@@ -416,58 +456,13 @@ exports.getPendingApprovals = async (req, res) => {
       reason: r.Reason,
       status: r.Status,
       appliedOn: r.CreatedAt,
-      approvalLevel: r.ApprovalLevel || 1,
-      // HR can approve everything (both level 1 and level 2)
-      canApprove: ['hr', 'admin'].includes(userRole) ? true : 
-                  (r.Status === "Pending" && (r.ApprovalLevel || 1) === 1 && 
-                  Number(r.Days) <= 3 && !['Maternity', 'LWP'].includes(r.LeaveType)),
-      canForward: r.Status === "Pending" && (r.ApprovalLevel || 1) === 1 && 
-                  (Number(r.Days) > 3 || ['Maternity', 'LWP'].includes(r.LeaveType)),
+      canApprove: userRole === 'admin' || userRole === 'hr' || 
+                  (userRole === 'manager' && r.Days <= 3 && !['Maternity', 'LWP'].includes(r.LeaveType))
     }));
 
     res.json(mapped);
   } catch (err) {
     console.error("Get pending approvals error:", err);
-    res.status(500).json({ 
-      success: false, 
-      message: err.message 
-    });
-  }
-};
-
-// ─── Get All Requests (HR / Admin) ────────────────────────────────────────────
-exports.getAllRequests = async (req, res) => {
-  try {
-    // Check if req.user exists
-    if (!req.user) {
-      console.error("req.user is undefined - verifyToken middleware may not be running");
-      return res.status(401).json({ 
-        success: false, 
-        message: "Unauthorized - Please login again" 
-      });
-    }
-
-    const userRole = req.user.role || 'employee';
-    
-    console.log("=== getAllRequests ===");
-    console.log("User Role:", userRole);
-
-    // ✅ Get ALL requests - no filtering for HR
-    const [rows] = await db.query(`
-      SELECT lr.*,
-             CONCAT(e.FirstName,' ',e.LastName) AS employeeName,
-             e.Department AS department,
-             e.Gender,
-             e.role as employeeRole
-      FROM leave_requests lr
-      JOIN employee e ON e.EmployeeID = lr.EmployeeID
-      ORDER BY lr.LeaveID DESC
-    `);
-    
-    console.log(`Found ${rows.length} total requests`);
-    res.json(rows);
-  } catch (err) {
-    console.error("Get all requests error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -492,134 +487,97 @@ exports.approveLeave = async (req, res) => {
     }
 
     const leave = rows[0];
+
+    // Flexi is auto-approved
+    if (leave.LeaveType === "Flexi") {
+      await conn.rollback();
+      return res.json({ success: true, message: "Flexi leave is auto-approved" });
+    }
+
     if (leave.Status === "Approved") {
       await conn.rollback();
       return res.json({ success: true, message: "Already approved" });
     }
 
-    const currentLevel = leave.ApprovalLevel || 1;
-    let canApprove = false;
-    let nextLevel = currentLevel;
-    let isFullyApproved = false;
+    if (leave.Status === "Rejected") {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: "Cannot approve a rejected request" });
+    }
 
-    if (approverRole === 'admin') {
+    // Check if user can approve
+    let canApprove = false;
+    const days = Number(leave.Days);
+
+    if (approverRole === 'admin' || approverRole === 'hr') {
       canApprove = true;
-      isFullyApproved = true;
-      nextLevel = 0;
-    } 
-    else if (approverRole === 'hr') {
-      if (currentLevel <= 2) {
-        const [emp] = await conn.query(
-          `SELECT role FROM employee WHERE EmployeeID = ?`,
-          [leave.EmployeeID]
-        );
-        if (emp[0]?.role === 'hr' && currentLevel === 1) {
-          canApprove = true;
-          isFullyApproved = true;
-          nextLevel = 0;
-        } else if (currentLevel === 2 || leave.Status === 'Forwarded to HR') {
-          canApprove = true;
-          isFullyApproved = true;
-          nextLevel = 0;
-        }
-      }
-    } 
-    else if (approverRole === 'manager') {
-      if (currentLevel === 1) {
-        const days = Number(leave.Days);
+    } else if (approverRole === 'manager') {
+      const [emp] = await conn.query(
+        `SELECT DirectSupervisor FROM employee WHERE EmployeeID = ?`,
+        [leave.EmployeeID]
+      );
+      if (emp[0]?.DirectSupervisor == approverId) {
         if (days <= 3 && !['Maternity', 'LWP'].includes(leave.LeaveType)) {
           canApprove = true;
-          isFullyApproved = true;
-          nextLevel = 0;
-        } else if (days > 3 || ['Maternity', 'LWP'].includes(leave.LeaveType)) {
-          canApprove = true;
-          isFullyApproved = false;
-          nextLevel = 2;
         }
       }
     }
 
     if (!canApprove) {
       await conn.rollback();
-      return res.status(403).json({
-        success: false,
-        message: "You don't have permission to approve this leave request"
-      });
+      let msg = "You don't have permission to approve this leave request";
+      if (approverRole === 'manager' && days > 3) {
+        msg = "Leaves exceeding 3 days require HR or Admin approval";
+      }
+      if (approverRole === 'manager' && ['Maternity', 'LWP'].includes(leave.LeaveType)) {
+        msg = "Maternity and LWP require HR or Admin approval";
+      }
+      return res.status(403).json({ success: false, message: msg });
     }
 
-    // Update the request
-    const newStatus = isFullyApproved ? 'Approved' : 'Forwarded to HR';
-    
+    // Approve the leave
     await conn.query(
       `UPDATE leave_requests
-       SET Status = ?,
-           ManagerApproved = ?,
-           HRApproved = ?,
-           ApprovalLevel = ?,
-           ApprovedBy = ?
+       SET Status = 'Approved', ApprovedBy = ?, ApprovedAt = NOW()
        WHERE LeaveID = ?`,
-      [
-        newStatus,
-        ['manager', 'hr', 'admin'].includes(approverRole) ? 1 : leave.ManagerApproved,
-        ['hr', 'admin'].includes(approverRole) ? 1 : leave.HRApproved,
-        nextLevel,
-        approverId,
-        id
-      ]
+      [approverId, id]
     );
 
-    // Log the approval
+    // Log approval
     await conn.query(
       `INSERT INTO leave_approvals (LeaveId, ApprovedBy, ApprovalRole, ActionTaken, Remarks)
        VALUES (?, ?, ?, 'Approved', ?)`,
       [id, approverId, approverRole, req.body?.remarks || null]
     );
 
-    // If fully approved, deduct balance
-    if (isFullyApproved) {
-      const fromDate = new Date(leave.FromDate);
-      const year = fromDate.getFullYear();
-      
-      const [empRows] = await conn.query(
-        `SELECT Gender FROM employee WHERE EmployeeID = ?`,
-        [leave.EmployeeID]
-      );
-      const gender = empRows[0]?.Gender || "Male";
-      await ensureBalanceRow(leave.EmployeeID, year, gender);
+    // Deduct balance
+    const fromDate = new Date(leave.FromDate);
+    const year = fromDate.getFullYear();
+    
+    const [empRows] = await conn.query(
+      `SELECT Gender FROM employee WHERE EmployeeID = ?`,
+      [leave.EmployeeID]
+    );
+    const gender = empRows[0]?.Gender || "Male";
+    await ensureBalanceRow(leave.EmployeeID, year, gender);
 
-      const colMap = {
-        Casual: "CasualLeave",
-        Sick: "SickLeave",
-        Earned: "EarnedLeave",
-        Flexi: "FlexiHoliday",
-        Maternity: "MaternityLeave",
-        LWP: null,
-      };
-      const col = colMap[leave.LeaveType];
-      if (col) {
-        const daysToDeduct = Math.ceil(Number(leave.Days));
-        await conn.query(
-          `UPDATE leave_balance
-           SET ${col} = GREATEST(0, FLOOR(${col}) - ?)
-           WHERE EmployeeId = ? AND Year = ?`,
-          [daysToDeduct, leave.EmployeeID, year]
-        );
-      }
-
-      // Record in availed_leaves
-      const month = String(fromDate.getMonth() + 1);
+    const colMap = {
+      Casual: "CasualLeave", Sick: "SickLeave", Earned: "EarnedLeave",
+      Flexi: "FlexiHoliday", Maternity: "MaternityLeave", LWP: null
+    };
+    const col = colMap[leave.LeaveType];
+    if (col && leave.LeaveType !== "Flexi") {
+      const daysToDeduct = Number(leave.Days);
       await conn.query(
-        `INSERT INTO availed_leaves (EmployeeId, Month, Year, LeaveType, availed_leaves)
-         VALUES (?,?,?,?,?)`,
-        [leave.EmployeeID, month, year, leave.LeaveType, leave.Days]
+        `UPDATE leave_balance
+         SET ${col} = GREATEST(0, ${col} - ?)
+         WHERE EmployeeId = ? AND Year = ?`,
+        [daysToDeduct, leave.EmployeeID, year]
       );
     }
 
     await conn.commit();
-    res.json({ 
-      success: true, 
-      message: isFullyApproved ? "Leave approved successfully" : "Leave forwarded to next approver" 
-    });
+    res.json({ success: true, message: "Leave approved successfully" });
+
   } catch (err) {
     await conn.rollback();
     console.error("Approve leave error:", err);
@@ -635,6 +593,38 @@ exports.rejectLeave = async (req, res) => {
     const { id } = req.params;
     const rejecterId = req.user.id;
     const rejecterRole = req.user.role;
+
+    const [rows] = await db.query(
+      `SELECT * FROM leave_requests WHERE LeaveID = ?`,
+      [id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: "Leave request not found" });
+    }
+
+    const leave = rows[0];
+
+    // Flexi is auto-approved, cannot be rejected
+    if (leave.LeaveType === "Flexi") {
+      return res.status(400).json({ success: false, message: "Flexi leave is auto-approved and cannot be rejected" });
+    }
+
+    let canReject = false;
+    if (['admin', 'hr'].includes(rejecterRole)) {
+      canReject = true;
+    } else if (rejecterRole === 'manager') {
+      const [emp] = await db.query(
+        `SELECT DirectSupervisor FROM employee WHERE EmployeeID = ?`,
+        [leave.EmployeeID]
+      );
+      if (emp[0]?.DirectSupervisor == rejecterId) {
+        canReject = true;
+      }
+    }
+
+    if (!canReject) {
+      return res.status(403).json({ success: false, message: "You don't have permission to reject this leave request" });
+    }
 
     await db.query(
       `UPDATE leave_requests SET Status = 'Rejected', RejectedBy = ? WHERE LeaveID = ?`,
@@ -653,128 +643,322 @@ exports.rejectLeave = async (req, res) => {
   }
 };
 
-// ─── Get Leave Calendar ───────────────────────────────────────────────────────
-exports.getLeaveCalendar = async (req, res) => {
+// ─── Get Employee Leave Details ──────────────────────────────────────────────
+exports.getEmployeeLeaveDetails = async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const targetYear = year || new Date().getFullYear();
-    const targetMonth = month || new Date().getMonth() + 1;
-
-    const [rows] = await db.query(
-      `SELECT lr.*,
-              CONCAT(e.FirstName,' ',e.LastName) AS employeeName,
-              e.Department
-       FROM leave_requests lr
-       JOIN employee e ON e.EmployeeID = lr.EmployeeID
-       WHERE lr.Status IN ('Approved', 'Pending', 'Forwarded to HR')
-         AND YEAR(lr.FromDate) = ? AND MONTH(lr.FromDate) = ?
-       ORDER BY lr.FromDate ASC`,
-      [targetYear, targetMonth]
-    );
-
-    const calendar = [];
-    const daysInMonth = new Date(targetYear, targetMonth, 0).getDate();
-
-    for (let day = 1; day <= daysInMonth; day++) {
-      const dateStr = `${targetYear}-${String(targetMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-      const dayLeaves = rows.filter(r => {
-        const from = new Date(r.FromDate);
-        const to = new Date(r.ToDate);
-        const check = new Date(dateStr);
-        return check >= from && check <= to;
-      });
-      calendar.push({
-        date: dateStr,
-        leaves: dayLeaves.map(l => ({
-          id: l.LeaveID,
-          employeeName: l.employeeName,
-          department: l.Department,
-          leaveType: l.LeaveType,
-          status: l.Status,
-          days: l.Days,
-        }))
-      });
-    }
-
-    res.json(calendar);
-  } catch (err) {
-    console.error("Get leave calendar error:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// ─── Get Holiday Submissions ──────────────────────────────────────────────────
-exports.getHolidaySubmissions = async (req, res) => {
-  try {
-    const { year } = req.query;
-    const targetYear = year || new Date().getFullYear();
-
-    const [rows] = await db.query(
-      `SELECT hs.*,
-              CONCAT(e.FirstName,' ',e.LastName) AS employeeName
-       FROM holiday_submissions hs
-       JOIN employee e ON e.EmployeeID = hs.EmployeeId
-       WHERE hs.Year = ?
-       ORDER BY hs.SelectedDate DESC`,
-      [targetYear]
-    );
-
-    res.json(rows);
-  } catch (err) {
-    console.error("Get holiday submissions error:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// ─── Submit Flexi Holidays ──────────────────────────────────────────────────
-exports.submitFlexiHolidays = async (req, res) => {
-  try {
-    const employeeId = req.user.id;
-    const { flexiHolidays } = req.body;
+    const { employeeId } = req.params;
     const year = new Date().getFullYear();
+    const userRole = req.user.role;
 
-    if (!flexiHolidays || !Array.isArray(flexiHolidays) || flexiHolidays.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Please select at least one flexi holiday"
-      });
+    if (!['admin', 'hr', 'manager'].includes(userRole)) {
+      return res.status(403).json({ success: false, message: "Permission denied" });
     }
 
-    if (flexiHolidays.length > 2) {
-      return res.status(400).json({
-        success: false,
-        message: "You can only select up to 2 flexi holidays"
-      });
+    // If manager, check if employee is under them
+    if (userRole === 'manager') {
+      const [emp] = await db.query(
+        `SELECT DirectSupervisor FROM employee WHERE EmployeeID = ?`,
+        [employeeId]
+      );
+      if (emp[0]?.DirectSupervisor != req.user.id) {
+        return res.status(403).json({ success: false, message: "You can only view your team members" });
+      }
     }
 
-    // Check if employee has already submitted this year
-    const [existing] = await db.query(
-      `SELECT COUNT(*) as count FROM holiday_submissions 
-       WHERE EmployeeId = ? AND Year = ?`,
+    // Get employee info
+    const [empRows] = await db.query(
+      `SELECT EmployeeID, FirstName, LastName, Department, role FROM employee WHERE EmployeeID = ?`,
+      [employeeId]
+    );
+    if (!empRows.length) {
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
+    const employee = empRows[0];
+
+    // Get leave balance
+    const [balRows] = await db.query(
+      `SELECT * FROM leave_balance WHERE EmployeeId = ? AND Year = ?`,
+      [employeeId, year]
+    );
+    const balance = balRows[0] || {};
+
+    // Get leave requests for the year
+    const [leaveRows] = await db.query(
+      `SELECT LeaveID, LeaveType, Status, Days, FromDate, ToDate, CreatedAt, ApprovedAt
+       FROM leave_requests
+       WHERE EmployeeID = ? AND YEAR(FromDate) = ?
+       ORDER BY CreatedAt DESC`,
       [employeeId, year]
     );
 
-    if (existing[0].count > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "You have already submitted your flexi holiday choices for this year"
-      });
-    }
+    const used = {}, pending = {}, approved = {};
+    leaveRows.forEach(l => {
+      const type = l.LeaveType;
+      if (!used[type]) used[type] = 0;
+      if (!pending[type]) pending[type] = 0;
+      if (!approved[type]) approved[type] = 0;
+      used[type] += l.Days;
+      if (l.Status === 'Pending') pending[type] += l.Days;
+      if (l.Status === 'Approved') approved[type] += l.Days;
+    });
 
-    // Insert submissions
-    const values = flexiHolidays.map(h => [employeeId, year, h]);
-    await db.query(
-      `INSERT INTO holiday_submissions (EmployeeId, Year, FlexiHoliday) VALUES ?`,
-      [values]
+    // Get earned leave history
+    const [earnedLogs] = await db.query(
+      `SELECT Quarter, EarnedDays, CreditedAt FROM earned_leave_log
+       WHERE EmployeeID = ? AND Year = ?
+       ORDER BY Quarter ASC`,
+      [employeeId, year]
     );
 
     res.json({
-      success: true,
-      message: `Successfully submitted ${flexiHolidays.length} flexi holiday(s)`
+      employee: {
+        id: employee.EmployeeID,
+        name: `${employee.FirstName} ${employee.LastName}`,
+        department: employee.Department,
+        role: employee.role
+      },
+      balance: {
+        Casual: Number(balance.CasualLeave || 0),
+        Sick: Number(balance.SickLeave || 0),
+        Earned: Number(balance.EarnedLeave || 0),
+        Flexi: Number(balance.FlexiHoliday || 0),
+        Maternity: Number(balance.MaternityLeave || 0)
+      },
+      used, pending, approved,
+      earnedLogs,
+      leaves: leaveRows.map(l => ({
+        id: l.LeaveID,
+        type: l.LeaveType,
+        days: l.Days,
+        status: l.Status,
+        fromDate: l.FromDate,
+        toDate: l.ToDate,
+        appliedOn: l.CreatedAt,
+        approvedOn: l.ApprovedAt
+      }))
     });
   } catch (err) {
-    console.error("Submit flexi holidays error:", err);
+    console.error("Get employee leave details error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
+// ─── Fixed Holidays ──────────────────────────────────────────────────────────
+
+exports.getFixedHolidays = async (req, res) => {
+  try {
+    const year = new Date().getFullYear();
+    const [rows] = await db.query(
+      `SELECT * FROM holiday WHERE Year = ? ORDER BY HolidayDate ASC`,
+      [year]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("Get fixed holidays error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.createFixedHoliday = async (req, res) => {
+  try {
+    const { holidayName, holidayDate, optional } = req.body;
+    const year = new Date(holidayDate).getFullYear();
+    const month = String(new Date(holidayDate).getMonth() + 1).padStart(2, '0');
+
+    if (!holidayName || !holidayDate) {
+      return res.status(400).json({ success: false, message: "Holiday name and date are required" });
+    }
+
+    const [existing] = await db.query(
+      `SELECT id FROM holiday WHERE HolidayDate = ?`,
+      [holidayDate]
+    );
+    if (existing.length) {
+      return res.status(400).json({ success: false, message: "Holiday already exists on this date" });
+    }
+
+    await db.query(
+      `INSERT INTO holiday (HolidayName, HolidayDate, Optional, Month, Year)
+       VALUES (?, ?, ?, ?, ?)`,
+      [holidayName, holidayDate, optional || null, month, year]
+    );
+
+    res.json({ success: true, message: "Fixed holiday created successfully" });
+  } catch (err) {
+    console.error("Create fixed holiday error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deleteFixedHoliday = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.query(`DELETE FROM holiday WHERE id = ?`, [id]);
+    res.json({ success: true, message: "Fixed holiday deleted successfully" });
+  } catch (err) {
+    console.error("Delete fixed holiday error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─── Flexi Holidays ──────────────────────────────────────────────────────────
+
+exports.getActiveFlexiHolidays = async (req, res) => {
+  try {
+    const year = new Date().getFullYear();
+    const [rows] = await db.query(
+      `SELECT FlexiHolidayID, HolidayName, HolidayDate, Year
+       FROM flexi_holidays
+       WHERE Year = ? AND Status = 'Active'
+       ORDER BY HolidayDate ASC`,
+      [year]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("Get flexi holidays error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getAllFlexiHolidays = async (req, res) => {
+  try {
+    const year = new Date().getFullYear();
+    const [rows] = await db.query(
+      `SELECT fh.*, CONCAT(e.FirstName,' ',e.LastName) AS createdByName
+       FROM flexi_holidays fh
+       LEFT JOIN employee e ON e.EmployeeID = fh.CreatedBy
+       WHERE fh.Year = ?
+       ORDER BY fh.HolidayDate DESC`,
+      [year]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("Get all flexi holidays error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.createFlexiHoliday = async (req, res) => {
+  try {
+    const { holidayName, holidayDate } = req.body;
+    const year = new Date(holidayDate).getFullYear();
+    const createdBy = req.user.id;
+
+    if (!holidayName || !holidayDate) {
+      return res.status(400).json({ success: false, message: "Holiday name and date are required" });
+    }
+
+    const [existing] = await db.query(
+      `SELECT FlexiHolidayID FROM flexi_holidays WHERE HolidayDate = ? AND Year = ?`,
+      [holidayDate, year]
+    );
+    if (existing.length) {
+      return res.status(400).json({ success: false, message: "Holiday already exists on this date" });
+    }
+
+    await db.query(
+      `INSERT INTO flexi_holidays (HolidayName, HolidayDate, Year, Status, CreatedBy)
+       VALUES (?, ?, ?, 'Active', ?)`,
+      [holidayName, holidayDate, year, createdBy]
+    );
+
+    res.json({ success: true, message: "Flexi holiday created successfully" });
+  } catch (err) {
+    console.error("Create flexi holiday error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.updateFlexiHolidayStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    await db.query(
+      `UPDATE flexi_holidays SET Status = ? WHERE FlexiHolidayID = ?`,
+      [status, id]
+    );
+    res.json({ success: true, message: "Flexi holiday status updated" });
+  } catch (err) {
+    console.error("Update flexi holiday error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deleteFlexiHoliday = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [used] = await db.query(
+      `SELECT LeaveID FROM leave_requests WHERE FlexiHolidayID = ?`,
+      [id]
+    );
+    if (used.length) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cannot delete: This flexi holiday has been used in leave requests" 
+      });
+    }
+
+    await db.query(`DELETE FROM flexi_holidays WHERE FlexiHolidayID = ?`, [id]);
+    res.json({ success: true, message: "Flexi holiday deleted successfully" });
+  } catch (err) {
+    console.error("Delete flexi holiday error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─── Leave Policy ────────────────────────────────────────────────────────────
+
+exports.getLeavePolicy = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT * FROM leave_policy ORDER BY PolicyID DESC LIMIT 1`
+    );
+    if (!rows.length) {
+      return res.json({
+        CasualLeave: 7,
+        SickLeave: 7,
+        EarnedLeave: 14,
+        QuarterlyEarned: 3.5,
+        FlexiHoliday: 2,
+        MaternityLeave: 180,
+        MaxEarnedCarryForward: 14
+      });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Get leave policy error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.updateLeavePolicy = async (req, res) => {
+  try {
+    const {
+      CasualLeave, SickLeave, EarnedLeave,
+      QuarterlyEarned, FlexiHoliday, MaternityLeave,
+      MaxEarnedCarryForward
+    } = req.body;
+
+    await db.query(
+      `INSERT INTO leave_policy 
+       (CasualLeave, SickLeave, EarnedLeave, QuarterlyEarned, FlexiHoliday, MaternityLeave, MaxEarnedCarryForward)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+       CasualLeave = VALUES(CasualLeave),
+       SickLeave = VALUES(SickLeave),
+       EarnedLeave = VALUES(EarnedLeave),
+       QuarterlyEarned = VALUES(QuarterlyEarned),
+       FlexiHoliday = VALUES(FlexiHoliday),
+       MaternityLeave = VALUES(MaternityLeave),
+       MaxEarnedCarryForward = VALUES(MaxEarnedCarryForward)`,
+      [CasualLeave, SickLeave, EarnedLeave, QuarterlyEarned, FlexiHoliday, MaternityLeave, MaxEarnedCarryForward]
+    );
+
+    res.json({ success: true, message: "Leave policy updated successfully" });
+  } catch (err) {
+    console.error("Update leave policy error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};

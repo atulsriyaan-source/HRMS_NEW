@@ -1,3 +1,4 @@
+// BalanceCards.jsx
 import React from "react";
 import { C, RADIUS } from "../../theme";
 
@@ -10,15 +11,9 @@ const LEAVE_CONFIG = [
   { key: "LWP",       label: "Leave Without Pay", total: null,color: "#5f5e5a" },
 ];
 
-/**
- * Props:
- *   balances — object from backend, keys match LEAVE_CONFIG.key
- *   gender   — "male" | "female"  (drives Maternity card visibility)
- */
 export default function BalanceCards({ balances, gender }) {
   const isFemale = gender?.toLowerCase() === "female";
 
-  // Only show types the employee can use
   const visible = LEAVE_CONFIG.filter(lt => {
     if (lt.key === "Maternity") return isFemale;
     return balances[lt.key] !== undefined;
@@ -32,10 +27,9 @@ export default function BalanceCards({ balances, gender }) {
       marginBottom: "24px",
     }}>
       {visible.map(lt => {
-        // Balance is always a whole integer (backend floors it)
-        const remaining = Math.floor(Number(balances[lt.key] ?? 0));
-        const used      = lt.total !== null ? Math.max(0, lt.total - remaining) : 0;
-        const pct       = lt.total ? Math.min(100, Math.round((used / lt.total) * 100)) : 0;
+        const remaining = Number(balances[lt.key] ?? 0);
+        const used = lt.total !== null ? Math.max(0, lt.total - remaining) : 0;
+        const pct = lt.total ? Math.min(100, Math.round((used / lt.total) * 100)) : 0;
 
         return (
           <div key={lt.key} style={{
@@ -50,16 +44,21 @@ export default function BalanceCards({ balances, gender }) {
             </div>
 
             <div style={{ fontSize: "30px", fontWeight: "700", color: lt.color, lineHeight: 1 }}>
-              {lt.total === null ? "—" : remaining}
+              {lt.total === null ? "—" : remaining.toFixed(1)}
             </div>
 
             <div style={{ fontSize: "11px", color: C.muted, marginTop: "4px" }}>
               {lt.total === null
                 ? "No fixed limit"
-                : `${used} used · ${lt.total} total`}
+                : `${used.toFixed(1)} used · ${lt.total} total`}
               {lt.key === "Earned" && (
                 <span style={{ display: "block", color: "#085041", marginTop: "2px" }}>
-                  Accrues monthly
+                  Accrues from unused Casual/Sick
+                </span>
+              )}
+              {lt.key === "Flexi" && (
+                <span style={{ display: "block", color: "#633806", marginTop: "2px" }}>
+                  Auto-approved
                 </span>
               )}
             </div>

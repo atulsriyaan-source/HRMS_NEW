@@ -1,3 +1,4 @@
+// TeamRequestsTab.jsx
 import React from "react";
 import { C, RADIUS } from "../../theme";
 
@@ -10,7 +11,6 @@ const STATUS_STYLE = {
   Pending:           { bg: "#fffbeb", color: "#92400e" },
   Approved:          { bg: "#ecfdf5", color: "#065f46" },
   Rejected:          { bg: "#fef2f2", color: "#b91c1c" },
-  "Forwarded to HR": { bg: "#eff6ff", color: "#1e40af" },
 };
 
 function StatusPill({ status }) {
@@ -37,12 +37,27 @@ function SectionLabel({ children }) {
   );
 }
 
-/**
- * Manager rules:
- *   canApprove (from backend) = Pending + ≤3 days + Casual/Sick/Earned/Flexi
- *   Everything else is view-only (Forwarded to HR, or >3 days)
- */
-export default function TeamRequestsTab({ requests, onApprove, onReject, onViewDetails }) {
+export default function TeamRequestsTab({ requests, onApprove, onReject, onViewDetails, userRole }) {
+  const canApprove = (request) => {
+    if (request.status !== 'Pending') return false;
+    if (request.leaveType === 'Flexi') return false; // Flexi is auto-approved
+    if (['admin', 'hr'].includes(userRole)) return true;
+    if (userRole === 'manager') {
+      return request.days <= 3 && !['Maternity', 'LWP'].includes(request.leaveType);
+    }
+    return false;
+  };
+
+  const getApprovalMessage = (request) => {
+    if (request.status !== 'Pending') return null;
+    if (request.leaveType === 'Flexi') return "Auto-approved";
+    if (userRole === 'manager') {
+      if (request.days > 3) return "Requires HR approval (>3 days)";
+      if (['Maternity', 'LWP'].includes(request.leaveType)) return "Requires HR approval";
+    }
+    return null;
+  };
+
   return (
     <div>
       <SectionLabel>Team Leave Requests</SectionLabel>
@@ -52,8 +67,19 @@ export default function TeamRequestsTab({ requests, onApprove, onReject, onViewD
         padding: "10px 14px", background: C.inputBg,
         borderRadius: "6px", border: `1px solid ${C.borderLight}`,
       }}>
-        You can <strong>approve</strong> Casual, Sick, Earned or Flexi leave of <strong>≤ 3 days</strong>.
-        Requests over 3 days or Maternity/LWP are automatically sent to HR — they appear here as <strong>Forwarded to HR</strong> for your visibility only.
+        {userRole === 'manager' ? (
+          <>
+            You can <strong>approve</strong> Casual, Sick, Earned or Flexi leave of <strong>≤ 3 days</strong>.
+            Requests over 3 days or Maternity/LWP require HR/Admin approval.
+          </>
+        ) : userRole === 'hr' || userRole === 'admin' ? (
+          <>
+            You can <strong>approve</strong> all pending leave requests.
+            Click on employee name to view their leave usage.
+          </>
+        ) : (
+          "Viewing team leave requests"
+        )}
       </div>
 
       {requests.length === 0 ? (
@@ -77,13 +103,24 @@ export default function TeamRequestsTab({ requests, onApprove, onReject, onViewD
             </thead>
             <tbody>
               {requests.map((r, i) => {
-                // Backend sends canApprove flag
-                const canAct = r.canApprove;
-                const isForwarded = r.status === "Forwarded to HR";
+                const canAct = canApprove(r);
+                const approvalMsg = getApprovalMessage(r);
 
                 return (
                   <tr key={r.id || i} style={i % 2 === 0 ? {} : { background: C.inputBg }}>
-                    <Td><strong>{r.employeeName}</strong></Td>
+                    <Td>
+                      <span 
+                        style={{ 
+                          color: C.primary, 
+                          cursor: 'pointer', 
+                          fontWeight: '500',
+                          borderBottom: `1px dashed ${C.primary}`
+                        }}
+                        onClick={() => onViewDetails(r)}
+                      >
+                        {r.employeeName}
+                      </span>
+                    </Td>
                     <Td>{LEAVE_TYPE_LABELS[r.leaveType] ?? r.leaveType}</Td>
                     <Td>{r.fromDate ? new Date(r.fromDate).toLocaleDateString() : "—"}</Td>
                     <Td>{r.toDate   ? new Date(r.toDate).toLocaleDateString()   : "—"}</Td>
@@ -92,25 +129,39 @@ export default function TeamRequestsTab({ requests, onApprove, onReject, onViewD
                       {r.reason || "—"}
                     </Td>
                     <Td>
-                      {isForwarded ? (
-                        <span style={{ fontSize: "11px", fontWeight: "600", color: "#1e40af", background: "#eff6ff", padding: "3px 10px", borderRadius: "999px" }}>
-                          Forwarded to HR
+                      {r.leaveType === 'Flexi' && r.status === 'Pending' ? (
+                        <span style={{ 
+                          fontSize: "11px", 
+                          color: "#065f46", 
+                          background: "#ecfdf5", 
+                          padding: "3px 10px", 
+                          borderRadius: "999px", 
+                          fontWeight: "600" 
+                        }}>
+                          Auto-Approved
                         </span>
                       ) : (
                         <StatusPill status={r.status} />
                       )}
                     </Td>
                     <Td>
-                      <div style={{ display: "flex", gap: "6px" }}>
-                        {canAct && (
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                        {r.status === 'Pending' && canAct && (
                           <>
                             <button style={s.approveBtn} onClick={() => onApprove(r.id)}>Approve</button>
                             <button style={s.rejectBtn}  onClick={() => onReject(r.id)}>Reject</button>
                           </>
                         )}
-                        {!canAct && !isForwarded && (
-                          <span style={{ fontSize: "11px", color: "#1e40af", background: "#eff6ff", padding: "3px 10px", borderRadius: "999px", fontWeight: "600" }}>
-                            Requires HR
+                        {r.status === 'Pending' && !canAct && approvalMsg && (
+                          <span style={{ 
+                            fontSize: "11px", 
+                            color: approvalMsg === 'Auto-approved' ? "#065f46" : "#1e40af", 
+                            background: approvalMsg === 'Auto-approved' ? "#ecfdf5" : "#eff6ff", 
+                            padding: "4px 12px", 
+                            borderRadius: "999px", 
+                            fontWeight: "600" 
+                          }}>
+                            {approvalMsg}
                           </span>
                         )}
                         <button style={s.viewBtn} onClick={() => onViewDetails(r)}>View</button>
