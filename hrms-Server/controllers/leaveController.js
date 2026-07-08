@@ -149,6 +149,180 @@ async function getUserRole(employeeId) {
 }
 
 // ─── Apply Leave ───────────────────────────────────────────────────────────────
+// exports.applyLeave = async (req, res) => {
+//   const conn = await db.getConnection();
+//   try {
+//     await conn.beginTransaction();
+
+//     const employeeId = req.user.id;
+//     const userRole = await getUserRole(employeeId);
+
+//     let {
+//       leaveType, halfDay, fromDate, toDate, reason,
+//       flexiSelected, emergencyContact, contactNumber, handoverTo
+//     } = req.body;
+
+//     const attachment = req.file ? req.file.filename : null;
+
+//     if (!leaveType || !fromDate || !toDate || !reason) {
+//       await conn.rollback();
+//       return res.status(400).json({ success: false, message: "Required fields missing" });
+//     }
+
+//     const start = new Date(fromDate);
+//     const end = new Date(toDate);
+//     if (end < start) {
+//       await conn.rollback();
+//       return res.status(400).json({ success: false, message: "To date must be after From date" });
+//     }
+
+//     let days = Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1;
+//     if (halfDay && halfDay !== "Full") {
+//       days = 0.5;
+//     }
+
+//     // Sick Leave Attachment
+//     if (leaveType === "Sick" && days > 2 && !attachment) {
+//       await conn.rollback();
+//       return res.status(400).json({ success: false, message: "Doctor's prescription required for Sick Leave exceeding 2 days." });
+//     }
+
+//     const year = start.getFullYear();
+
+//     const [empRows] = await conn.query(
+//       `SELECT Gender FROM employee WHERE EmployeeID = ?`,
+//       [employeeId]
+//     );
+//     const gender = empRows[0]?.Gender || "Male";
+
+//     // Credit earned leave before checking balance
+//     try {
+//       await calculateAndCreditEarnedLeave(employeeId);
+//     } catch (e) {
+//       console.error("Earned leave calculation error:", e.message);
+//     }
+
+//     await ensureBalanceRow(employeeId, year, gender);
+
+//     const [balRows] = await conn.query(
+//       `SELECT * FROM leave_balance WHERE EmployeeId = ? AND Year = ?`,
+//       [employeeId, year]
+//     );
+//     const bal = balRows[0];
+
+//     // Check balance
+//     const colMap = {
+//       Casual: "CasualLeave", Sick: "SickLeave", Earned: "EarnedLeave",
+//       Flexi: "FlexiHoliday", Maternity: "MaternityLeave", LWP: null
+//     };
+
+//     const col = colMap[leaveType];
+//     if (col) {
+//       const remaining = Number(bal[col] || 0);
+//       if (remaining < days && leaveType !== "Maternity") {
+//         await conn.rollback();
+//         return res.status(400).json({
+//           success: false,
+//           message: `Insufficient ${leaveType} balance. Available: ${remaining} days`
+//         });
+//       }
+//     }
+
+//     // Flexi Holiday Validation
+//     let flexiHolidayID = null;
+//     let status = "Pending";
+//     let isFlexiAutoApproved = false;
+
+//     if (leaveType === "Flexi") {
+//       if (!flexiSelected) {
+//         await conn.rollback();
+//         return res.status(400).json({ success: false, message: "Please select a Flexi Holiday." });
+//       }
+
+//       if (fromDate !== toDate) {
+//         await conn.rollback();
+//         return res.status(400).json({ success: false, message: "Flexi Holiday must be a single day." });
+//       }
+
+//       days = 1;
+//       halfDay = "Full";
+
+//       const [holiday] = await conn.query(
+//         `SELECT * FROM flexi_holidays WHERE FlexiHolidayID = ? AND Status = 'Active'`,
+//         [flexiSelected]
+//       );
+//       if (!holiday.length) {
+//         await conn.rollback();
+//         return res.status(400).json({ success: false, message: "Invalid or inactive Flexi Holiday selected." });
+//       }
+
+//       // Check if already used
+//       const [already] = await conn.query(
+//         `SELECT LeaveID FROM leave_requests
+//          WHERE EmployeeID = ? AND FlexiHolidayID = ?
+//          AND Status IN ('Approved', 'Pending')`,
+//         [employeeId, flexiSelected]
+//       );
+//       if (already.length) {
+//         await conn.rollback();
+//         return res.status(400).json({ success: false, message: "You have already selected this Flexi Holiday." });
+//       }
+
+//       flexiHolidayID = flexiSelected;
+      
+//       // Flexi is auto-approved
+//       status = "Approved";
+//       isFlexiAutoApproved = true;
+//     }
+
+//     // Insert leave request
+//     const [result] = await conn.query(
+//       `INSERT INTO leave_requests
+//       (EmployeeID, LeaveType, HalfDay, FromDate, ToDate, Days, Reason,
+//        Attachment, FlexiHolidayID, EmergencyContact, ContactNumber, HandoverTo,
+//        Status, CreatedAt, ApprovedAt)
+//       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+//       [
+//         employeeId, leaveType, halfDay || "Full",
+//         fromDate, toDate, days, reason,
+//         attachment, flexiHolidayID,
+//         emergencyContact || null, contactNumber || null,
+//         handoverTo || null,
+//         status,
+//         new Date(),
+//         isFlexiAutoApproved ? new Date() : null
+//       ]
+//     );
+
+//     // For Flexi, deduct balance immediately
+//     if (leaveType === "Flexi" && isFlexiAutoApproved) {
+//       await conn.query(
+//         `UPDATE leave_balance SET FlexiHoliday = FlexiHoliday - 1
+//          WHERE EmployeeId = ? AND Year = ?`,
+//         [employeeId, year]
+//       );
+//     }
+
+//     await conn.commit();
+
+//     res.json({
+//       success: true,
+//       message: isFlexiAutoApproved
+//         ? "Flexi Holiday approved automatically."
+//         : "Leave application submitted successfully.",
+//       autoApproved: isFlexiAutoApproved
+//     });
+
+//   } catch (err) {
+//     await conn.rollback();
+//     console.error(err);
+//     res.status(500).json({ success: false, message: err.message });
+//   } finally {
+//     conn.release();
+//   }
+// };
+
+// ─── Apply Leave ───────────────────────────────────────────────────────────────
 exports.applyLeave = async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -162,11 +336,20 @@ exports.applyLeave = async (req, res) => {
       flexiSelected, emergencyContact, contactNumber, handoverTo
     } = req.body;
 
+    // Direct fix for variable binding fallback in multi-part boundaries
+    if (leaveType === "Flexi" && !flexiSelected && req.body.flexiSelected) {
+      flexiSelected = req.body.flexiSelected;
+    }
+
     const attachment = req.file ? req.file.filename : null;
 
+    // Strict safety check for missing variables
     if (!leaveType || !fromDate || !toDate || !reason) {
       await conn.rollback();
-      return res.status(400).json({ success: false, message: "Required fields missing" });
+      return res.status(400).json({ 
+        success: false, 
+        message: `Required fields missing. Received: leaveType=${leaveType}, fromDate=${fromDate}, toDate=${toDate}, reason=${reason}` 
+      });
     }
 
     const start = new Date(fromDate);
@@ -175,6 +358,7 @@ exports.applyLeave = async (req, res) => {
       await conn.rollback();
       return res.status(400).json({ success: false, message: "To date must be after From date" });
     }
+    
 
     let days = Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1;
     if (halfDay && halfDay !== "Full") {
@@ -322,6 +506,8 @@ exports.applyLeave = async (req, res) => {
   }
 };
 
+    // ... leaves remaining database insertions from your controller intact ...
+
 // ─── Get My Requests ───────────────────────────────────────────────────────────
 exports.getMyRequests = async (req, res) => {
   try {
@@ -412,6 +598,61 @@ exports.getBalance = async (req, res) => {
 };
 
 // ─── Pending Approvals ────────────────────────────────────────────────────────
+// exports.getPendingApprovals = async (req, res) => {
+//   try {
+//     if (!req.user) {
+//       return res.status(401).json({ success: false, message: "Unauthorized" });
+//     }
+
+//     const userId = req.user.id;
+//     const userRole = req.user.role || 'employee';
+
+//     let query = `
+//       SELECT lr.*,
+//              CONCAT(e.FirstName,' ',e.LastName) AS employeeName,
+//              e.Department AS department,
+//              e.role AS employeeRole,
+//              e.DirectSupervisor
+//       FROM leave_requests lr
+//       JOIN employee e ON e.EmployeeID = lr.EmployeeID
+//       WHERE lr.Status = 'Pending'
+//     `;
+
+//     const params = [];
+
+//     if (userRole === 'manager') {
+//       query += ` AND e.DirectSupervisor = ?`;
+//       params.push(userId);
+//     }
+
+//     query += ` ORDER BY lr.CreatedAt DESC`;
+
+//     const [rows] = await db.query(query, params);
+
+//     const mapped = rows.map(r => ({
+//       id: r.LeaveID,
+//       employeeId: r.EmployeeID,
+//       employeeName: r.employeeName || "Unknown",
+//       department: r.department,
+//       leaveType: r.LeaveType,
+//       halfDay: r.HalfDay,
+//       fromDate: r.FromDate,
+//       toDate: r.ToDate,
+//       days: r.Days,
+//       reason: r.Reason,
+//       status: r.Status,
+//       appliedOn: r.CreatedAt,
+//       canApprove: userRole === 'admin' || userRole === 'hr' || 
+//                   (userRole === 'manager' && r.Days <= 3 && !['Maternity', 'LWP'].includes(r.LeaveType))
+//     }));
+
+//     res.json(mapped);
+//   } catch (err) {
+//     console.error("Get pending approvals error:", err);
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// };
+// ─── Pending Approvals ────────────────────────────────────────────────────────
 exports.getPendingApprovals = async (req, res) => {
   try {
     if (!req.user) {
@@ -435,7 +676,8 @@ exports.getPendingApprovals = async (req, res) => {
     const params = [];
 
     if (userRole === 'manager') {
-      query += ` AND e.DirectSupervisor = ?`;
+      // Filter out admin and hr requests so they do not show up on the manager's action panel
+      query += ` AND e.DirectSupervisor = ? AND e.role NOT IN ('admin', 'hr')`;
       params.push(userId);
     }
 
@@ -959,6 +1201,65 @@ exports.updateLeavePolicy = async (req, res) => {
     res.json({ success: true, message: "Leave policy updated successfully" });
   } catch (err) {
     console.error("Update leave policy error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─── Get All Requests (Admin/HR Global Tracker) ──────────────────────────────
+exports.getAllRequests = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    const userId = req.user.id;
+    const userRole = req.user.role || 'employee';
+
+    // 1. Join with employee table to fetch names and department details
+    let query = `
+      SELECT lr.*,
+             CONCAT(e.FirstName, ' ', e.LastName) AS employeeName,
+             e.Department AS department,
+             fh.HolidayName
+      FROM leave_requests lr
+      JOIN employee e ON e.EmployeeID = lr.EmployeeID
+      LEFT JOIN flexi_holidays fh ON fh.FlexiHolidayID = lr.FlexiHolidayID
+    `;
+
+    const params = [];
+
+    // 2. If a manager accesses this endpoint, restrict to their team members
+    if (userRole === 'manager') {
+      query += ` WHERE e.DirectSupervisor = ?`;
+      params.push(userId);
+    }
+
+    query += ` ORDER BY lr.CreatedAt DESC`;
+
+    const [rows] = await db.query(query, params);
+
+    // 3. Map keys strictly to match the lowercase camelCase properties expected by LeaveRequestsTab.jsx
+    const mapped = rows.map(r => ({
+      id: r.LeaveID,
+      employeeId: r.EmployeeID,
+      employeeName: r.employeeName || "Unknown",
+      department: r.department,
+      leaveType: r.LeaveType,
+      halfDay: r.HalfDay,
+      fromDate: r.FromDate,
+      toDate: r.ToDate,
+      days: r.Days,
+      reason: r.Reason,
+      status: r.Status,
+      appliedOn: r.CreatedAt,
+      approvedOn: r.ApprovedAt,
+      attachment: r.Attachment,
+      flexiHolidayName: r.HolidayName
+    }));
+
+    res.json(mapped);
+  } catch (err) {
+    console.error("Get all requests error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };

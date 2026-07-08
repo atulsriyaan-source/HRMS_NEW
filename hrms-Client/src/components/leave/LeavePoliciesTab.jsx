@@ -86,7 +86,7 @@ export default function LeavePoliciesTab() {
 
   const fetchFixedHolidays = async () => {
     try {
-      const res = await fetch(`${apiUrl}/api/holidays/fixed`, {
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/fixed`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -100,7 +100,7 @@ export default function LeavePoliciesTab() {
 
   const fetchFlexiHolidays = async () => {
     try {
-      const res = await fetch(`${apiUrl}/api/holidays/flexi/all`, {
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/flexi/all`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -114,7 +114,7 @@ export default function LeavePoliciesTab() {
 
   const fetchLeavePolicy = async () => {
     try {
-      const res = await fetch(`${apiUrl}/api/leave-policy`, {
+      const res = await fetch(`${apiUrl}/api/leaves/leave-policy`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -149,7 +149,7 @@ export default function LeavePoliciesTab() {
     setMessage(null);
 
     try {
-      const res = await fetch(`${apiUrl}/api/holidays/fixed`, {
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/fixed`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -182,7 +182,7 @@ export default function LeavePoliciesTab() {
     if (!confirm('Are you sure you want to delete this fixed holiday?')) return;
 
     try {
-      const res = await fetch(`${apiUrl}/api/holidays/fixed/${id}`, {
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/fixed/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -212,7 +212,7 @@ export default function LeavePoliciesTab() {
     setMessage(null);
 
     try {
-      const res = await fetch(`${apiUrl}/api/holidays/flexi`, {
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/flexi`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -243,7 +243,7 @@ export default function LeavePoliciesTab() {
   const handleToggleFlexiStatus = async (id, currentStatus) => {
     const newStatus = currentStatus === 'Active' ? 'Inactive' : 'Active';
     try {
-      const res = await fetch(`${apiUrl}/api/holidays/flexi/${id}`, {
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/flexi/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -289,7 +289,7 @@ export default function LeavePoliciesTab() {
     setMessage(null);
 
     try {
-      const res = await fetch(`${apiUrl}/api/leave-policy`, {
+      const res = await fetch(`${apiUrl}/api/leaves/leave-policy`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

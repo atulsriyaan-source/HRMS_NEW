@@ -1,357 +1,159 @@
 import React, { useState, useEffect } from "react";
-import { C } from "../../theme";
+import { C, RADIUS } from "../../theme";
 import { apiUrl } from "../../URL";
 
-const FIXED_HOLIDAYS = [
-  { date: "26 Jan", name: "Republic Day" },
-  { date: "14 Apr", name: "Dr. Ambedkar Jayanti" },
-  { date: "01 May", name: "Maharashtra Day" },
-  { date: "15 Aug", name: "Independence Day" },
-  { date: "02 Oct", name: "Gandhi Jayanti" },
-  { date: "25 Oct", name: "Dussehra" },
-  { date: "12 Nov", name: "Diwali" },
-  { date: "25 Dec", name: "Christmas" },
+// Reliable fallback for standard mandatory public holidays in case backend route is missing
+const DEFAULT_FIXED_HOLIDAYS = [
+  { HolidayID: "f1", HolidayName: "New Year's Day", HolidayDate: "2026-01-01", HolidayType: "Fixed" },
+  { HolidayID: "f2", HolidayName: "Republic Day", HolidayDate: "2026-01-26", HolidayType: "Fixed" },
+  { HolidayID: "f3", HolidayName: "Independence Day", HolidayDate: "2026-08-15", HolidayType: "Fixed" },
+  { HolidayID: "f4", HolidayName: "Mahatma Gandhi Jayanti", HolidayDate: "2026-10-02", HolidayType: "Fixed" },
+  { HolidayID: "f5", HolidayName: "Christmas Day", HolidayDate: "2026-12-25", HolidayType: "Fixed" }
 ];
 
-const FLEXI_OPTIONS = [
-  "26 Jan 2026 — Republic Day",
-  "25 Mar 2026 — Holi",
-  "10 Apr 2026 — Good Friday",
-  "14 Apr 2026 — Ambedkar Jayanti",
-  "07 Nov 2026 — Guru Nanak Jayanti",
-  "25 Dec 2026 — Christmas",
-];
-
-function SectionLabel({ children }) {
-  return (
-    <div style={{
-      fontSize: "12px",
-      fontWeight: "700",
-      color: C.primary,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      marginBottom: "14px",
-      paddingBottom: "8px",
-      borderBottom: `2px solid ${C.borderLight}`
-    }}>
-      {children}
-    </div>
-  );
-}
-
-export default function HolidaysTab({ flexiSelected, onFlexiToggle }) {
+export default function HolidaysTab({ flexiSelected = [] }) {
+  const [holidays, setHolidays] = useState([]);
+  const [loading, setLoading] = useState(true);
   const token = localStorage.getItem("token");
-  const [submissions, setSubmissions] = useState([]);
-  const [showSubmissions, setShowSubmissions] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState(null);
-  const userRole = localStorage.getItem("role") || "employee";
 
-  const remaining = 2 - flexiSelected.length;
-
-  // Fetch existing submissions
   useEffect(() => {
-    if (userRole === 'hr' || userRole === 'admin') {
-      fetchSubmissions();
-    }
-  }, []);
+    const fetchAllHolidays = async () => {
+      try {
+        setLoading(true);
+        const headers = { Authorization: `Bearer ${token}` };
 
-  const fetchSubmissions = async () => {
-    try {
-      const res = await fetch(`${apiUrl}/api/leaves/holiday-submissions`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSubmissions(data);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  // Submit selected flexi holidays
-  const handleSubmitFlexi = async () => {
-    if (flexiSelected.length === 0) {
-      setMessage({ type: 'error', text: 'Please select at least one flexi holiday' });
-      return;
-    }
-
-    setSubmitting(true);
-    setMessage(null);
-
-    try {
-      const res = await fetch(`${apiUrl}/api/leaves/submit-holidays`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ flexiHolidays: flexiSelected })
-      });
-
-      if (res.ok) {
-        setMessage({ type: 'success', text: 'Flexi holidays submitted successfully!' });
-        if (userRole === 'hr' || userRole === 'admin') {
-          fetchSubmissions();
+        // 1. Fetch Flexi Holidays (Confirmed working endpoint)
+        let flexiData = [];
+        try {
+          const flexiRes = await fetch(`${apiUrl}/api/leaves/holidays/flexi/active`, { headers });
+          if (flexiRes.ok) {
+            const data = await flexiRes.json();
+            flexiData = (Array.isArray(data) ? data : []).map(h => ({
+              ...h,
+              HolidayType: "Flexi",
+              HolidayID: h.HolidayID || h.FlexiHolidayID,
+              HolidayName: h.HolidayName,
+              HolidayDate: h.HolidayDate
+            }));
+          }
+        } catch (err) {
+          console.error("Failed to fetch flexi holidays:", err);
         }
-      } else {
-        const err = await res.json();
-        setMessage({ type: 'error', text: err.message || 'Failed to submit' });
+
+        // 2. Fetch Fixed Holidays 
+        let fixedData = [];
+        try {
+          // Trying common clean route structure pattern
+          const fixedRes = await fetch(`${apiUrl}/api/leaves/holidays/fixed`, { headers });
+          if (fixedRes.ok) {
+            const data = await fixedRes.json();
+            fixedData = (Array.isArray(data) ? data : []).map(h => ({ ...h, HolidayType: "Fixed" }));
+          } else {
+            // If API responds with 404, safely adopt baseline fixed calendar dates
+            console.warn("Fixed holiday route missing; using default public holiday schedule.");
+            fixedData = DEFAULT_FIXED_HOLIDAYS;
+          }
+        } catch (err) {
+          console.error("Failed to fetch fixed holidays from API:", err);
+          fixedData = DEFAULT_FIXED_HOLIDAYS;
+        }
+
+        // Merge arrays cleanly
+        setHolidays([...fixedData, ...flexiData]);
+      } catch (err) {
+        console.error("General holiday loading process encountered an error:", err);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Server error. Please try again.' });
-    } finally {
-      setSubmitting(false);
+    };
+
+    fetchAllHolidays();
+  }, [token]);
+
+  // Apply filtering rules down to view state
+  const visibleHolidays = holidays.filter((holiday) => {
+    if (holiday.HolidayType === "Fixed") {
+      return true;
     }
-  };
+    if (holiday.HolidayType === "Flexi") {
+      const idToCheck = holiday.HolidayID || holiday.FlexiHolidayID;
+      return flexiSelected.map(String).includes(String(idToCheck));
+    }
+    return true; 
+  });
+
+  if (loading) {
+    return <div style={{ textAlign: "center", padding: "40px", color: C.muted }}>Loading holiday calendar...</div>;
+  }
 
   return (
     <div>
-      <SectionLabel>Company Holidays 2026</SectionLabel>
-      
-      {/* Stats */}
-      <div style={{
-        display: "flex",
-        gap: "12px",
-        marginBottom: "16px",
-        flexWrap: "wrap"
-      }}>
-        <span style={s.statsPill}>
-          Flexi Available: 2
-        </span>
-        <span style={{ ...s.statsPill, color: C.primary }}>
-          Selected: {flexiSelected.length}
-        </span>
-        <span style={{
-          ...s.statsPill,
-          color: remaining > 0 ? "#085041" : "#dc2626",
-          background: remaining > 0 ? "#e1f5ee" : "#fef2f2",
-          border: `1px solid ${remaining > 0 ? "#a7d7c5" : "#fca5a5"}`
-        }}>
-          Remaining: {remaining}
-        </span>
+      <div style={{ marginBottom: "20px" }}>
+        <h3 style={{ margin: "0 0 4px 0", color: C.text, fontSize: "16px", fontWeight: "600" }}>
+          Holiday Calendar 2026
+        </h3>
+        <p style={{ margin: 0, color: C.muted, fontSize: "13px" }}>
+          Showing your structural company mandates alongside personal floating options.
+        </p>
       </div>
 
-      {/* Message */}
-      {message && (
-        <div style={{
-          padding: "10px 16px",
-          borderRadius: "6px",
-          marginBottom: "16px",
-          background: message.type === 'success' ? "#ecfdf5" : "#fef2f2",
-          color: message.type === 'success' ? "#065f46" : "#b91c1c",
-          border: `1px solid ${message.type === 'success' ? "#6ee7b7" : "#fca5a5"}`
-        }}>
-          {message.text}
+      {visibleHolidays.length === 0 ? (
+        <div style={{ padding: "30px", textAlign: "center", color: C.muted, background: C.inputBg, borderRadius: RADIUS.input }}>
+          No calendar events matches the criteria.
         </div>
-      )}
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {visibleHolidays.map((holiday) => {
+            const isFixed = holiday.HolidayType === "Fixed";
+            const targetId = holiday.HolidayID || holiday.FlexiHolidayID;
+            
+            return (
+              <div
+                key={`${holiday.HolidayType}-${targetId}`}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "14px 18px",
+                  background: isFixed ? C.card : "#f0fdf4", 
+                  border: `1px solid ${isFixed ? C.borderLight : "#bbf7d0"}`,
+                  borderRadius: RADIUS.input,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: "600", fontSize: "14px", color: C.text }}>
+                    {holiday.HolidayName}
+                  </div>
+                  <div style={{ fontSize: "12px", color: C.muted, marginTop: "2px" }}>
+                    {new Date(holiday.HolidayDate).toLocaleDateString("en-US", {
+                      weekday: "long",
+                      year: "numeric",
+                      month: "long",
+                      day: "numeric",
+                    })}
+                  </div>
+                </div>
 
-      {/* Fixed Holidays */}
-      {FIXED_HOLIDAYS.map(h => (
-        <div key={h.date} style={s.holidayRow}>
-          <span style={s.hDate}>{h.date}</span>
-          <span style={s.hName}>{h.name}</span>
-          <span style={{ ...s.hPill, background: "#e8f4fa", color: "#0c447c" }}>Fixed</span>
-        </div>
-      ))}
-
-      {/* Flexi Holidays */}
-      <div style={{ marginTop: "28px" }}>
-        <SectionLabel>Flexi Holidays — Pick Any 2</SectionLabel>
-        {FLEXI_OPTIONS.map(opt => {
-          const checked = flexiSelected.includes(opt);
-          const disabled = !checked && flexiSelected.length >= 2;
-          return (
-            <div key={opt} style={s.holidayRow}>
-              <span style={s.hDate}>{opt.split(" — ")[0]}</span>
-              <span style={{ ...s.hName, color: disabled ? C.muted : C.text }}>
-                {opt.split(" — ")[1]}
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <span style={{ ...s.hPill, background: "#faeeda", color: "#633806" }}>Flexi</span>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={disabled}
-                  onChange={() => onFlexiToggle(opt)}
+                <span
                   style={{
-                    width: "16px",
-                    height: "16px",
-                    cursor: disabled ? "not-allowed" : "pointer",
-                    accentColor: C.primary
+                    fontSize: "11px",
+                    fontWeight: "700",
+                    textTransform: "uppercase",
+                    padding: "4px 10px",
+                    borderRadius: "20px",
+                    letterSpacing: "0.05em",
+                    background: isFixed ? "#eff6ff" : "#dcfce7",
+                    color: isFixed ? "#1e40af" : "#15803d",
+                    border: `1px solid ${isFixed ? "#bfdbfe" : "#bbf7d0"}`,
                   }}
-                />
+                >
+                  {isFixed ? "Fixed Mandate" : "Selected Flexi"}
+                </span>
               </div>
-            </div>
-          );
-        })}
-
-        {/* Submit Button */}
-        <div style={{
-          display: "flex",
-          gap: "12px",
-          marginTop: "16px",
-          alignItems: "center",
-          flexWrap: "wrap"
-        }}>
-          <button
-            onClick={handleSubmitFlexi}
-            disabled={submitting || flexiSelected.length === 0}
-            style={{
-              padding: "10px 28px",
-              background: flexiSelected.length > 0 ? C.primary : C.muted,
-              color: "#fff",
-              border: "none",
-              borderRadius: "6px",
-              fontSize: "14px",
-              fontWeight: "600",
-              cursor: flexiSelected.length > 0 ? "pointer" : "not-allowed",
-              opacity: flexiSelected.length > 0 ? 1 : 0.5,
-              transition: "all 0.2s ease",
-            }}
-          >
-            {submitting ? "Submitting..." : "Submit Flexi Holidays"}
-          </button>
-          {flexiSelected.length > 0 && (
-            <span style={{ fontSize: "13px", color: C.muted }}>
-              You have selected {flexiSelected.length} of 2 holidays
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* HR/Admin: View Submissions */}
-      {(userRole === 'hr' || userRole === 'admin') && (
-        <div style={{ marginTop: "32px" }}>
-          <div style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "12px"
-          }}>
-            <SectionLabel>Employee Flexi Submissions</SectionLabel>
-            <button
-              onClick={fetchSubmissions}
-              style={{
-                padding: "4px 12px",
-                background: C.inputBg,
-                border: `1px solid ${C.borderLight}`,
-                borderRadius: "4px",
-                fontSize: "12px",
-                cursor: "pointer",
-              }}
-            >
-              Refresh
-            </button>
-          </div>
-
-          {submissions.length === 0 ? (
-            <div style={{
-              padding: "40px 20px",
-              textAlign: "center",
-              color: C.muted,
-              fontSize: "14px",
-              background: C.inputBg,
-              borderRadius: "6px",
-              border: `1px solid ${C.borderLight}`
-            }}>
-              No flexi holiday submissions yet
-            </div>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={s.table}>
-                <thead>
-                  <tr>
-                    <Th>Employee</Th>
-                    <Th>Selected Holiday</Th>
-                    <Th>Submitted On</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {submissions.map((sub, i) => (
-                    <tr key={sub.id || i} style={i % 2 === 0 ? {} : { background: C.inputBg }}>
-                      <Td>{sub.employeeName || sub.EmployeeId}</Td>
-                      <Td>{sub.FlexiHoliday}</Td>
-                      <Td style={{ color: C.muted }}>
-                        {sub.SelectedDate ? new Date(sub.SelectedDate).toLocaleDateString() : '—'}
-                      </Td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
-
-const Th = ({ children }) => (
-  <th style={{
-    textAlign: "left",
-    padding: "8px 12px",
-    background: C.inputBg,
-    borderBottom: `2px solid ${C.borderLight}`,
-    fontSize: "12px",
-    fontWeight: "600",
-    color: C.muted,
-  }}>
-    {children}
-  </th>
-);
-
-const Td = ({ children, style }) => (
-  <td style={{
-    padding: "8px 12px",
-    borderBottom: `1px solid ${C.borderLight}`,
-    fontSize: "13px",
-    color: C.text,
-    ...style
-  }}>
-    {children}
-  </td>
-);
-
-const s = {
-  statsPill: {
-    fontSize: "13px",
-    fontWeight: "600",
-    color: C.text,
-    padding: "6px 14px",
-    background: C.inputBg,
-    borderRadius: "6px",
-    border: `1px solid ${C.borderLight}`
-  },
-  holidayRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "14px",
-    padding: "12px 0",
-    borderBottom: `1px solid ${C.borderLight}`
-  },
-  hDate: {
-    fontSize: "13px",
-    color: C.muted,
-    minWidth: "60px",
-    fontWeight: "500"
-  },
-  hName: {
-    fontSize: "14px",
-    fontWeight: "500",
-    color: C.text,
-    flex: 1
-  },
-  hPill: {
-    fontSize: "11px",
-    padding: "3px 10px",
-    borderRadius: "999px",
-    fontWeight: "500"
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    fontSize: "13px"
-  }
-};

@@ -1,6 +1,6 @@
-// ApplyLeaveTab.jsx
 import React, { useState, useMemo, useEffect } from "react";
 import { C, RADIUS } from "../../theme";
+import { apiUrl } from "../../URL";
 
 const ALL_LEAVE_TYPES = [
   { value: "Casual",    label: "Casual Leave",       color: "#0c447c", total: 7   },
@@ -101,34 +101,29 @@ export default function ApplyLeaveTab({ onSubmit, gender, balances = {} }) {
   const [flexiHolidays, setFlexiHolidays] = useState([]);
   const [loadingFlexi, setLoadingFlexi] = useState(false);
 
+  const fetchFlexiHolidays = async () => {
+    try {
+      setLoadingFlexi(true);
+      const res = await fetch(`${apiUrl}/api/leaves/holidays/flexi/active`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        setFlexiHolidays([]);
+        return;
+      }
+      const data = await res.json();
+      setFlexiHolidays(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Error fetching flexi holidays:", err);
+      setFlexiHolidays([]);
+    } finally {
+      setLoadingFlexi(false);
+    }
+  };
+
   useEffect(() => {
     fetchFlexiHolidays();
   }, []);
-
-  // In ApplyLeaveTab.jsx, update the fetchFlexiHolidays function:
-
-const fetchFlexiHolidays = async () => {
-  try {
-    setLoadingFlexi(true);
-    const res = await fetch('/api/holidays/flexi/active', {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    
-    if (!res.ok) {
-      console.error("Flexi holidays API error:", res.status);
-      setFlexiHolidays([]);
-      return;
-    }
-    
-    const data = await res.json();
-    setFlexiHolidays(Array.isArray(data) ? data : []);
-  } catch (err) {
-    console.error("Error fetching flexi holidays:", err);
-    setFlexiHolidays([]);
-  } finally {
-    setLoadingFlexi(false);
-  }
-};
 
   const leaveTypes = useMemo(() => {
     return ALL_LEAVE_TYPES
@@ -158,6 +153,7 @@ const fetchFlexiHolidays = async () => {
   };
 
   const calculateDays = () => {
+    if (form.leaveType === "Flexi") return 1;
     if (form.halfDay !== "Full") return 0.5;
     return daysBetween(form.fromDate, form.toDate);
   };
@@ -168,20 +164,22 @@ const fetchFlexiHolidays = async () => {
 
   const validate = () => {
     const e = {};
-    if (!form.leaveType)  e.leaveType = "Select a leave type";
-    if (!form.fromDate)   e.fromDate  = "Required";
-    if (!form.toDate)     e.toDate    = "Required";
-    if (form.fromDate && form.toDate && new Date(form.toDate) < new Date(form.fromDate))
-                          e.toDate    = "Must be after from date";
-    if (!form.reason.trim()) e.reason = "Reason is required";
-    if (form.leaveType === "Flexi") {
-      if (!form.flexiSelected) {
-        e.flexiSelected = "Select a flexi holiday";
-      }
-      if (form.fromDate && form.toDate && form.fromDate !== form.toDate) {
-        e.toDate = "Flexi holiday must be a single day";
+    if (!form.leaveType) e.leaveType = "Select a leave type";
+
+    if (form.leaveType !== "Flexi") {
+      if (!form.fromDate) e.fromDate = "Required";
+      if (!form.toDate) e.toDate = "Required";
+      if (form.fromDate && form.toDate && new Date(form.toDate) < new Date(form.fromDate)) {
+        e.toDate = "Must be after from date";
       }
     }
+
+    if (!form.reason.trim()) e.reason = "Reason is required";
+
+    if (form.leaveType === "Flexi" && !form.flexiSelected) {
+      e.flexiSelected = "Select a flexi holiday";
+    }
+
     if (needsDoc && !form.attachment)
       e.attachment = "Doctor's prescription required";
 
@@ -203,24 +201,44 @@ const fetchFlexiHolidays = async () => {
     const errs = validate();
     if (Object.keys(errs).length) { setErrors(errs); return; }
     
-    const submitData = { ...form };
-    if (form.leaveType === "Flexi" && form.flexiSelected) {
-      const selectedHoliday = flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected);
-      if (selectedHoliday) {
-        submitData.fromDate = selectedHoliday.HolidayDate;
-        submitData.toDate = selectedHoliday.HolidayDate;
-      }
-    }
-    onSubmit(submitData);
-  };
+    let submitData = {
+      leaveType: form.leaveType,
+      reason: form.reason,
+      emergencyContact: form.emergencyContact || "",
+      contactNumber: form.contactNumber || "",
+      attachment: form.attachment,
+    };
 
+    if (form.leaveType === "Flexi") {
+      const selectedHoliday = flexiHolidays.find(
+        (h) => String(h.FlexiHolidayID) === String(form.flexiSelected)
+      );
+      
+      if (selectedHoliday) {
+        // Crucial fix: Format date into YYYY-MM-DD cleanly so backend new Date() handles it safely
+        const dateObj = new Date(selectedHoliday.HolidayDate);
+        const formattedDate = dateObj.toISOString().split('T')[0];
+
+        submitData.fromDate = formattedDate;
+        submitData.toDate = formattedDate;
+        submitData.halfDay = "Full";
+        submitData.flexiSelected = selectedHoliday.FlexiHolidayID; 
+      }
+    } else {
+      submitData.fromDate = form.fromDate;
+      submitData.toDate = form.toDate;
+      submitData.halfDay = form.halfDay;
+    }
+
+    onSubmit(submitData); 
+  };
+  
   const selectedType = leaveTypes.find(l => l.value === form.leaveType);
 
   return (
     <form onSubmit={handleSubmit} noValidate>
       <SectionLabel>Apply for Leave</SectionLabel>
 
-      {/* Leave type selector */}
       <div style={{ ...s.field, marginBottom: "16px" }}>
         <label style={s.label}>Leave Type <Required /></label>
         <select
@@ -229,7 +247,7 @@ const fetchFlexiHolidays = async () => {
           onChange={e => set("leaveType", e.target.value)}
         >
           <option value="">Select leave type…</option>
-          {leaveTypes.map(lt => (
+          ={leaveTypes.map(lt => (
             <option key={lt.value} value={lt.value} disabled={lt.disabled}>
               {lt.label}
               {lt.total !== null && lt.value !== "Maternity"
@@ -242,7 +260,6 @@ const fetchFlexiHolidays = async () => {
         {errors.leaveType && <ErrMsg>{errors.leaveType}</ErrMsg>}
       </div>
 
-      {/* Flexi holiday dropdown */}
       {form.leaveType === "Flexi" && (
         <div style={{ marginBottom: "16px" }}>
           <label style={s.label}>Select Flexi Holiday <Required /></label>
@@ -273,7 +290,6 @@ const fetchFlexiHolidays = async () => {
         </div>
       )}
 
-      {/* Dates + half day */}
       {form.leaveType !== "Flexi" && (
         <div style={s.grid3}>
           <div style={s.field}>
@@ -307,27 +323,23 @@ const fetchFlexiHolidays = async () => {
         </div>
       )}
 
-      {/* For Flexi, show selected date info */}
       {form.leaveType === "Flexi" && form.flexiSelected && (
         <div style={{ ...s.field, marginBottom: "16px" }}>
           <label style={s.label}>Selected Date</label>
           <div style={{
-            padding: "10px 14px",
-            background: C.inputBg,
-            borderRadius: RADIUS.input,
-            border: `1px solid ${C.borderLight}`,
-            fontSize: "14px",
-            color: C.text
+            padding: "10px 14px", background: C.inputBg,
+            borderRadius: RADIUS.input, border: `1px solid ${C.borderLight}`,
+            fontSize: "14px", color: C.text
           }}>
-            {flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected)?.HolidayName || "Selected"} 
-            - {flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected)?.HolidayDate 
-               ? new Date(flexiHolidays.find(h => h.FlexiHolidayID === form.flexiSelected).HolidayDate).toLocaleDateString() 
+            {flexiHolidays.find(h => String(h.FlexiHolidayID) === String(form.flexiSelected))?.HolidayName || "Selected"} 
+            {" - "}
+            {flexiHolidays.find(h => String(h.FlexiHolidayID) === String(form.flexiSelected))?.HolidayDate 
+               ? new Date(flexiHolidays.find(h => String(h.FlexiHolidayID) === String(form.flexiSelected)).HolidayDate).toLocaleDateString() 
                : ""}
           </div>
         </div>
       )}
 
-      {/* Summary + approval path */}
       {days > 0 && form.leaveType && (
         <>
           <InfoBox type="info">
@@ -342,7 +354,6 @@ const fetchFlexiHolidays = async () => {
         </>
       )}
 
-      {/* Type-specific notices */}
       {isSickLong && (
         <InfoBox type="warn">
           Sick leave exceeding 2 days requires a doctor's prescription. Please upload it below.
@@ -359,7 +370,6 @@ const fetchFlexiHolidays = async () => {
         </InfoBox>
       )}
 
-      {/* Emergency contact */}
       <div style={s.grid2}>
         <div style={s.field}>
           <label style={s.label}>Emergency Contact</label>
@@ -379,7 +389,6 @@ const fetchFlexiHolidays = async () => {
         </div>
       </div>
 
-      {/* Reason */}
       <div style={{ ...s.field, marginBottom: "16px" }}>
         <label style={s.label}>Reason <Required /></label>
         <textarea
@@ -392,7 +401,6 @@ const fetchFlexiHolidays = async () => {
         {errors.reason && <ErrMsg>{errors.reason}</ErrMsg>}
       </div>
 
-      {/* Doctor prescription */}
       {needsDoc && (
         <div style={{ ...s.field, marginBottom: "20px" }}>
           <label style={s.label}>Doctor's Prescription <Required /></label>

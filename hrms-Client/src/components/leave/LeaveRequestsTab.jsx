@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from "react";
-import { C, RADIUS } from "../../theme";
+import React, { useMemo } from "react";
+import { C } from "../../theme";
 
 const LEAVE_TYPE_LABELS = {
   Casual: "Casual Leave", Sick: "Sick Leave", Earned: "Earned Leave",
@@ -13,18 +13,6 @@ const STATUS_STYLE = {
   "Forwarded to HR": { bg: "#eff6ff", color: "#1e40af" },
 };
 
-function SectionLabel({ children }) {
-  return (
-    <div style={{
-      fontSize: "12px", fontWeight: "700", color: C.primary,
-      letterSpacing: "0.08em", textTransform: "uppercase",
-      marginBottom: "14px", paddingBottom: "8px", borderBottom: `2px solid ${C.borderLight}`
-    }}>
-      {children}
-    </div>
-  );
-}
-
 function StatusPill({ status }) {
   const st = STATUS_STYLE[status] ?? STATUS_STYLE.Pending;
   return (
@@ -37,123 +25,127 @@ function StatusPill({ status }) {
   );
 }
 
-export default function LeaveRequestsTab({ requests, onApprove, onReject, onViewDetails }) {
-  const [filters, setFilters] = useState({ leaveType: "", status: "", search: "" });
-
-  const filtered = useMemo(() => {
-    return requests.filter(r => {
-      if (filters.leaveType && r.leaveType !== filters.leaveType) return false;
-      if (filters.status    && r.status    !== filters.status)    return false;
-      if (filters.search) {
-        const q = filters.search.toLowerCase();
-        if (!r.employeeName?.toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-  }, [requests, filters]);
-
-  const setF = (k, v) => setFilters(p => ({ ...p, [k]: v }));
-
+function SectionLabel({ children }) {
   return (
-    <div>
-      <SectionLabel>All Leave Requests</SectionLabel>
-
-      {/* Filters */}
-      <div style={s.filterBar}>
-        <input
-          type="text" placeholder="Search employee…" style={s.filterInput}
-          value={filters.search} onChange={e => setF("search", e.target.value)}
-        />
-        <select style={s.filterSelect} value={filters.leaveType} onChange={e => setF("leaveType", e.target.value)}>
-          <option value="">All Leave Types</option>
-          {Object.entries(LEAVE_TYPE_LABELS).map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-        </select>
-        <select style={s.filterSelect} value={filters.status} onChange={e => setF("status", e.target.value)}>
-          <option value="">All Statuses</option>
-          <option value="Pending">Pending</option>
-          <option value="Forwarded to HR">Forwarded to HR</option>
-          <option value="Approved">Approved</option>
-          <option value="Rejected">Rejected</option>
-        </select>
-        <span style={s.count}>{filtered.length} request{filtered.length !== 1 ? "s" : ""}</span>
-      </div>
-
-      {filtered.length === 0 ? (
-        <div style={s.empty}>No leave requests found.</div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={s.table}>
-            <thead>
-              <tr style={s.thead}>
-                <Th>Employee</Th>
-                <Th>Leave Type</Th>
-                <Th>From</Th>
-                <Th>To</Th>
-                <Th>Days</Th>
-                <Th>Status</Th>
-                <Th>Applied On</Th>
-                <Th>Action</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r, i) => (
-                <tr key={r.id || i} style={i % 2 === 0 ? {} : { background: C.inputBg }}>
-                  <Td><strong>{r.employeeName}</strong></Td>
-                  <Td>{LEAVE_TYPE_LABELS[r.leaveType] ?? r.leaveType}</Td>
-                  <Td>{r.fromDate ? new Date(r.fromDate).toLocaleDateString() : "—"}</Td>
-                  <Td>{r.toDate   ? new Date(r.toDate).toLocaleDateString()   : "—"}</Td>
-                  <Td><strong>{r.days}</strong></Td>
-                  <Td><StatusPill status={r.status} /></Td>
-                  <Td style={{ color: C.muted }}>
-                    {r.appliedOn ? new Date(r.appliedOn).toLocaleDateString() : "—"}
-                  </Td>
-                  <Td>
-                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                      {["Pending", "Forwarded to HR"].includes(r.status) && (
-                        <>
-                          <button style={s.approveBtn} onClick={() => onApprove(r.id)}>Approve</button>
-                          <button style={s.rejectBtn}  onClick={() => onReject(r.id)}>Reject</button>
-                        </>
-                      )}
-                      <button style={s.viewBtn} onClick={() => onViewDetails(r)}>View</button>
-                    </div>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+    <div style={{
+      fontSize: "12px", fontWeight: "700", color: C.primary,
+      letterSpacing: "0.08em", textTransform: "uppercase",
+      marginBottom: "14px", paddingBottom: "8px", borderBottom: `2px solid ${C.borderLight}`
+    }}>
+      {children}
     </div>
   );
 }
 
-const Th = ({ children }) => (
+export default function LeaveRequestsTab({ 
+  requests = [], 
+  onApprove, 
+  onReject, 
+  onViewDetails,
+  userRole // Formally accepted parameter to clear parent call bindings safely
+}) {
+  const pendingRequests = useMemo(() => requests.filter(r => r.status === "Pending"), [requests]);
+  const historyRequests = useMemo(() => requests.filter(r => r.status !== "Pending"), [requests]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
+      {/* Pending Global Tracker Sub-Section */}
+      <div>
+        <SectionLabel>All Global Pending Requests</SectionLabel>
+        {pendingRequests.length === 0 ? (
+          <div style={s.empty}>No global pending leave requests found.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <Th>Employee</Th>
+                  <Th>Type</Th>
+                  <Th>Duration</Th>
+                  <Th>Days</Th>
+                  <Th>Reason</Th>
+                  <Th>Actions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingRequests.map(r => (
+                  <tr key={r.id}>
+                    <Td style={{ fontWeight: "600" }}>{r.employeeName}</Td>
+                    <Td>{LEAVE_TYPE_LABELS[r.leaveType] || r.leaveType}</Td>
+                    <Td>{new Date(r.fromDate).toLocaleDateString()} - {new Date(r.toDate).toLocaleDateString()}</Td>
+                    <Td style={{ fontWeight: "600" }}>{r.days}</Td>
+                    <Td style={{ maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.reason}</Td>
+                    <Td>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button style={s.approveBtn} onClick={() => onApprove?.(r)}>Approve</button>
+                        <button style={s.rejectBtn} onClick={() => onReject?.(r)}>Reject</button>
+                        <button style={s.viewBtn} onClick={() => onViewDetails?.(r)}>View</button>
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Global History Sub-Section */}
+      <div>
+        <SectionLabel>Processed Leave History</SectionLabel>
+        {historyRequests.length === 0 ? (
+          <div style={s.empty}>No processed history available.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <Th>Employee</Th>
+                  <Th>Type</Th>
+                  <Th>Duration</Th>
+                  <Th>Days</Th>
+                  <Th>Status</Th>
+                  <Th>Actions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyRequests.map(r => (
+                  <tr key={r.id}>
+                    <Td style={{ fontWeight: "600" }}>{r.employeeName}</Td>
+                    <Td>{LEAVE_TYPE_LABELS[r.leaveType] || r.leaveType}</Td>
+                    <Td>{new Date(r.fromDate).toLocaleDateString()} - {new Date(r.toDate).toLocaleDateString()}</Td>
+                    <Td style={{ fontWeight: "600" }}>{r.days}</Td>
+                    <Td><StatusPill status={r.status} /></Td>
+                    <Td><button style={s.viewBtn} onClick={() => onViewDetails?.(r)}>View</button></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const Th = ({ children, style }) => (
   <th style={{
-    textAlign: "left", padding: "10px 12px", background: C.inputBg,
+    textAlign: "left", padding: "12px", background: C.inputBg,
     borderBottom: `2px solid ${C.borderLight}`, fontSize: "12px",
-    fontWeight: "600", color: C.muted, whiteSpace: "nowrap"
-  }}>
-    {children}
-  </th>
+    fontWeight: "600", color: C.muted, whiteSpace: "nowrap", ...style
+  }}>{children}</th>
 );
+
 const Td = ({ children, style }) => (
-  <td style={{ padding: "10px 12px", borderBottom: `1px solid ${C.borderLight}`, fontSize: "13px", color: C.text, ...style }}>
+  <td style={{ padding: "12px", borderBottom: `1px solid ${C.borderLight}`, fontSize: "13px", color: C.text, ...style }}>
     {children}
   </td>
 );
 
 const s = {
-  filterBar:    { display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap", alignItems: "center" },
-  filterInput:  { padding: "8px 12px", border: `1.5px solid ${C.borderLight}`, borderRadius: "6px", fontSize: "13px", background: C.card, color: C.text, outline: "none", minWidth: "180px" },
-  filterSelect: { padding: "8px 12px", border: `1.5px solid ${C.borderLight}`, borderRadius: "6px", fontSize: "13px", background: C.card, color: C.text, outline: "none", minWidth: "150px" },
-  count:        { fontSize: "13px", color: C.muted, marginLeft: "auto" },
-  table:        { width: "100%", borderCollapse: "collapse", fontSize: "13px" },
-  thead:        {},
-  empty:        { padding: "60px 20px", textAlign: "center", color: C.muted, fontSize: "14px" },
-  approveBtn:   { padding: "5px 12px", background: "#ecfdf5", color: "#065f46", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" },
-  rejectBtn:    { padding: "5px 12px", background: "#fef2f2", color: "#b91c1c", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" },
-  viewBtn:      { padding: "5px 12px", background: "#eff6ff", color: "#1e40af", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" },
+  table:      { width: "100%", borderCollapse: "collapse" },
+  approveBtn: { padding: "5px 12px", background: "#ecfdf5", color: "#065f46", border: "1px solid #bbf7d0", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" },
+  rejectBtn:  { padding: "5px 12px", background: "#fef2f2", color: "#b91c1c", border: "1px solid #fca5a5", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" },
+  viewBtn:    { padding: "5px 12px", background: "#f1f5f9", color: "#334155", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" },
+  empty:      { textAlign: "center", color: C.muted, padding: "24px", border: `1px dashed ${C.borderLight}`, borderRadius: "8px" }
 };

@@ -8,11 +8,10 @@ import MyRequestsTab    from "../../components/leave/MyRequestsTab";
 import TeamRequestsTab  from "../../components/leave/TeamRequestsTab";
 import LeaveRequestsTab from "../../components/leave/LeaveRequestsTab";
 import HolidaysTab      from "../../components/leave/HolidaysTab";
-import LeaveCalendarTab from "../../components/leave/LeaveCalendarTab";
 import LeavePoliciesTab from "../../components/leave/LeavePoliciesTab";
 import ViewDetailsModal from "../../components/leave/ViewDetailsModal";
 
-// ─── Tab config per role ───────────────────────────────────────────────────────
+// ─── Tab config per role (Leave Calendar removed) ───────────────────────────────
 const TABS_BY_ROLE = {
   employee: [
     { key: "apply",    label: "Apply Leave"  },
@@ -20,22 +19,21 @@ const TABS_BY_ROLE = {
     { key: "holidays", label: "Holidays"     },
   ],
   manager: [
-    { key: "apply", label: "Apply Leave" },
+    { key: "apply",    label: "Apply Leave"  },
     { key: "team",     label: "Team Requests" },
     { key: "requests", label: "My Requests"   },
     { key: "holidays", label: "Holidays"      },
   ],
- hr: [
-    { key: "apply", label: "Apply Leave" },
-    { key: "allreq",   label: "Leave Requests"  },
-    { key: "calendar", label: "Leave Calendar"  },
-    { key: "holidays", label: "Holidays"        },
+  hr: [
+    { key: "apply",    label: "Apply Leave"   },
+    { key: "allreq",   label: "Leave Requests" },
+    { key: "requests", label: "My Requests"  },
+    { key: "holidays", label: "Holidays"       },
   ],
   admin: [
-    { key: "allreq",   label: "Leave Requests"  },
-    { key: "calendar", label: "Leave Calendar"  },
-    { key: "policies", label: "Leave Policies"  },
-    { key: "holidays", label: "Holidays"        },
+    { key: "allreq",   label: "Leave Requests" },
+    { key: "policies", label: "Leave Policies" },
+    { key: "holidays", label: "Holidays"       },
   ],
 };
 
@@ -115,7 +113,7 @@ export default function Leave() {
         }
       }
 
-      // All Requests (HR/Admin only)
+      // All Requests (HR / Admin view)
       if (role === "hr" || role === "admin") {
         try {
           const r = await fetch(`${apiUrl}/api/leaves/all-requests`, { headers });
@@ -126,17 +124,6 @@ export default function Leave() {
         } catch (err) {
           console.error("All requests fetch error:", err);
         }
-      }
-
-      // Fetch flexi holidays (for holidays tab)
-      try {
-        const flexiRes = await fetch(`${apiUrl}/api/holidays/flexi/active`, { headers });
-        if (flexiRes.ok) {
-          const data = await flexiRes.json();
-          // Store for holidays tab if needed
-        }
-      } catch (err) {
-        console.error("Flexi holidays fetch error:", err);
       }
 
     } catch (err) {
@@ -150,13 +137,16 @@ export default function Leave() {
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  const handleSubmit = async (form) => {
+  const handleSubmit = async (submitData) => {
     try {
+      setLoading(true);
       const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => {
-        if (k !== "attachment" && v !== null && v !== undefined) fd.append(k, v);
+      
+      Object.entries(submitData).forEach(([k, v]) => {
+        if (v !== null && v !== undefined) {
+          fd.append(k, v);
+        }
       });
-      if (form.attachment) fd.append("attachment", form.attachment);
 
       const res = await fetch(`${apiUrl}/api/leaves/apply`, {
         method: "POST",
@@ -164,18 +154,20 @@ export default function Leave() {
         body: fd,
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json();
+
+      if (res.ok && data.success !== false) {
         alert(data.message || "Leave application submitted successfully!");
-        fetchAll();
-        setActiveTab("requests");
+        await fetchAll();
+        setActiveTab(role === "admin" ? "allreq" : "requests");
       } else {
-        const err = await res.json();
-        alert(err.message || "Failed to submit leave request.");
+        alert(data.message || "Failed to submit leave request.");
       }
     } catch (err) {
-      console.error(err);
+      console.error("Submission exception error:", err);
       alert("Server error. Please try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -292,12 +284,6 @@ export default function Leave() {
             onViewDetails={handleViewDetails}
             userRole={role}
           />
-        )}
-
-        {!loading && activeTab === "calendar" && (
-          <div style={{ padding: "40px 20px", textAlign: "center", color: C.muted }}>
-            <LeaveCalendarTab />
-          </div>
         )}
 
         {!loading && activeTab === "holidays" && (

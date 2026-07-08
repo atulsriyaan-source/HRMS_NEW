@@ -17,6 +17,8 @@ const upload = multer({ storage });
 // ─── Employee routes ─────────────────────────────────────────────────────────
 router.get("/balance", verifyToken, leaveController.getBalance);
 router.get("/my-requests", verifyToken, leaveController.getMyRequests);
+router.get("/all-requests", verifyToken, leaveController.getAllRequests);
+router.get("/requests", verifyToken, leaveController.getAllRequests); 
 router.post("/apply", verifyToken, upload.single("attachment"), leaveController.applyLeave);
 
 // ─── Pending Approvals (Manager/HR/Admin) ────────────────────────────────────
@@ -31,15 +33,15 @@ router.get("/employee/:employeeId/details", verifyToken, leaveController.getEmpl
 
 // ─── Fixed Holidays (Admin only) ─────────────────────────────────────────────
 router.get("/holidays/fixed", verifyToken, leaveController.getFixedHolidays);
-router.post("/holidays/fixed", verifyToken, checkRole(['admin']), leaveController.createFixedHoliday);
-router.delete("/holidays/fixed/:id", verifyToken, checkRole(['admin']), leaveController.deleteFixedHoliday);
+router.post("/holidays/fixed", verifyToken, leaveController.createFixedHoliday);
+router.delete("/holidays/fixed/:id", verifyToken, leaveController.deleteFixedHoliday);
 
 // ─── Flexi Holidays ───────────────────────────────────────────────────────────
-router.get("/holidays/flexi/active", verifyToken, leaveController.getActiveFlexiHolidays);
-router.get("/holidays/flexi/all", verifyToken, checkRole(['admin', 'hr']), leaveController.getAllFlexiHolidays);
-router.post("/holidays/flexi", verifyToken, checkRole(['admin']), leaveController.createFlexiHoliday);
-router.put("/holidays/flexi/:id", verifyToken, checkRole(['admin']), leaveController.updateFlexiHolidayStatus);
-router.delete("/holidays/flexi/:id", verifyToken, checkRole(['admin']), leaveController.deleteFlexiHoliday);
+router.get("/holidays/flexi/active", leaveController.getActiveFlexiHolidays);
+router.get("/holidays/flexi/all", verifyToken, leaveController.getAllFlexiHolidays);
+router.post("/holidays/flexi", verifyToken,  leaveController.createFlexiHoliday);
+router.put("/holidays/flexi/:id", verifyToken, leaveController.updateFlexiHolidayStatus);
+router.delete("/holidays/flexi/:id", verifyToken, leaveController.deleteFlexiHoliday);
 
 // ─── Leave Policy (Admin only) ───────────────────────────────────────────────
 router.get("/leave-policy", verifyToken, leaveController.getLeavePolicy);
